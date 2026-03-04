@@ -57,3 +57,19 @@ tokenburn/
 - `fix: 修复BUG`
 - `docs: 文档更新`
 - `refactor: 代码重构`
+
+## 控制面（前端页面）
+
+启动控制面服务：
+
+```bash
+PYTHONPATH=src python3 -m llm247 --ui --ui-host 127.0.0.1 --ui-port 8787
+```
+
+浏览器访问：
+
+```text
+http://127.0.0.1:8787
+```
+
+页面会通过 `/api/tasks` 聚合并展示全部任务状态（autonomous + legacy）。
