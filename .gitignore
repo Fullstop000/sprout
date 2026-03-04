@@ -1,0 +1,22 @@
+# Runtime outputs
+.llm247/
+reports/
+.env
+
+# Python artifacts
+__pycache__/
+*.pyc
+
+# AI/LLM project specific exclusions
+models/
+data/
+logs/
+*.log
+.huggingface/
+.hf_cache/
+*.pt
+*.bin
+*.pth
+
+# Development notes
+notes/
