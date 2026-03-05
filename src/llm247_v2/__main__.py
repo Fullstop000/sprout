@@ -95,8 +95,22 @@ def main() -> int:
 
     if args.ui:
         from llm247_v2.dashboard.server import serve_dashboard
-        serve_dashboard(store, directive_path, host=args.ui_host, port=args.ui_port, state_dir=state_dir)
-        return 0
+        from llm247_v2.storage.experience import ExperienceStore
+
+        exp_store = ExperienceStore(state_dir / "experience.db")
+        try:
+            serve_dashboard(
+                store,
+                directive_path,
+                host=args.ui_host,
+                port=args.ui_port,
+                state_dir=state_dir,
+                experience_store=exp_store,
+            )
+            return 0
+        finally:
+            exp_store.close()
+            store.close()
 
     from llm247_v2.llm.client import ArkLLMClient, BudgetExhaustedError, LLMAuditLogger
     from llm247_v2.agent import AutonomousAgentV2, GracefulShutdown, run_agent_loop
@@ -143,7 +157,7 @@ def main() -> int:
         ui_thread = threading.Thread(
             target=serve_dashboard,
             args=(store, directive_path, args.ui_host, args.ui_port),
-            kwargs={"state_dir": state_dir},
+            kwargs={"state_dir": state_dir, "experience_store": exp_store},
             daemon=True,
         )
         ui_thread.start()

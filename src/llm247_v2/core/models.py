@@ -11,6 +11,8 @@ class TaskStatus(str, Enum):
     PLANNING = "planning"
     EXECUTING = "executing"
     VERIFYING = "verifying"
+    NEEDS_HUMAN = "needs_human"
+    HUMAN_RESOLVED = "human_resolved"
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
@@ -31,6 +33,8 @@ class TaskSource(str, Enum):
 
 @dataclass
 class Task:
+    """One unit of work tracked across discovery, execution, and human handoff."""
+
     id: str
     title: str
     description: str
@@ -49,6 +53,7 @@ class Task:
     token_cost: int = 0
     time_cost_seconds: float = 0.0
     whats_learned: str = ""
+    human_help_request: str = ""
 
 
 @dataclass

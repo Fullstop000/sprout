@@ -17,6 +17,7 @@ class TestTaskStatus(unittest.TestCase):
         self.assertEqual(TaskStatus.DISCOVERED.value, "discovered")
         self.assertEqual(TaskStatus.COMPLETED.value, "completed")
         self.assertEqual(TaskStatus.FAILED.value, "failed")
+        self.assertEqual(TaskStatus.NEEDS_HUMAN.value, "needs_human")
 
     def test_all_statuses_are_strings(self):
         for status in TaskStatus:
@@ -35,6 +36,7 @@ class TestTask(unittest.TestCase):
         self.assertEqual(task.status, "discovered")
         self.assertEqual(task.priority, 3)
         self.assertEqual(task.branch_name, "")
+        self.assertEqual(task.human_help_request, "")
 
     def test_all_fields(self):
         task = Task(

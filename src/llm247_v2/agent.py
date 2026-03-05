@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 from datetime import datetime, timezone
@@ -202,9 +203,12 @@ class AutonomousAgentV2:
             self.obs.system_event("execution_aborted", "directive changed to paused mid-cycle")
             return executed, completed, failed
 
-        task = self.store.get_next_queued_task()
+        task = self.store.get_next_executable_task()
         if not task:
-            self.obs.decision("No tasks to execute", reasoning="Queue is empty, waiting for next discovery cycle")
+            self.obs.decision(
+                "No tasks to execute",
+                reasoning="No queued or human-resolved tasks, waiting for next discovery cycle",
+            )
             return executed, completed, failed
 
         executed += 1
@@ -220,6 +224,10 @@ class AutonomousAgentV2:
         task_start_time = time.monotonic()
         token_tracker = _get_tracker(self.llm)
         token_before = token_tracker.snapshot() if token_tracker else None
+
+        # Tasks resolved by humans bypass planning/execution and retry verification directly.
+        if task.status == TaskStatus.HUMAN_RESOLVED.value:
+            return self._continue_verification_after_human_resolution(task, task_start_time, token_tracker, token_before)
 
         # ── Retrieve relevant experiences ──
         experience_context = ""
@@ -250,14 +258,26 @@ class AutonomousAgentV2:
         for step in plan.steps:
             allowed, reason = constitution.check_action_allowed(step.action, step.target)
             if not allowed:
-                task.status = TaskStatus.FAILED.value
-                task.error_message = f"Constitution blocked: {reason}"
-                self._finalize_costs(task, task_start_time, token_tracker, token_before)
-                self.store.update_task(task)
                 self.obs.plan_blocked(task.id, reason)
-                self.obs.task_failed(task.id, f"Constitution blocked: {reason}")
-                self._extract_and_store_learnings(task, "failed")
-                return False
+                return self._mark_task_needs_human(
+                    task,
+                    failure_message=f"Constitution blocked: {reason}",
+                    human_request=self._build_help_request(
+                        phase="Constitution Check",
+                        task=task,
+                        what_happened=f"The planned step `{step.action} {step.target}` was blocked by constitution policy.",
+                        blocking_reason=reason,
+                        suggested_actions=[
+                            f"Edit constitution at {self.constitution_path} to allow `{step.action}` on `{step.target}`.",
+                            "Or modify the task scope/description so the agent avoids this action.",
+                            "Then click Resolve to let the agent re-plan this task.",
+                        ],
+                        plan_context=task.plan,
+                    ),
+                    task_start_time=task_start_time,
+                    token_tracker=token_tracker,
+                    token_before=token_before,
+                )
 
         # ── Worktree isolation ──
         branch_name = ""
@@ -298,12 +318,29 @@ class AutonomousAgentV2:
 
         if not all_ok:
             error = results[-1].output[:300] if results else "unknown"
-            task.status = TaskStatus.FAILED.value
-            task.error_message = f"Execution failed: {error}"
-            self._finalize_costs(task, task_start_time, token_tracker, token_before)
-            self.store.update_task(task)
-            self.obs.task_failed(task.id, task.error_message[:120])
-            self._extract_and_store_learnings(task, "failed")
+            failed_steps = [
+                f"  Step {r.step_index}: `{r.action} {r.target}` — {r.output[:150]}"
+                for r in results if not r.success
+            ]
+            self._mark_task_needs_human(
+                task,
+                failure_message=f"Execution failed: {error}",
+                human_request=self._build_help_request(
+                    phase="Execution",
+                    task=task,
+                    what_happened="One or more plan steps failed during execution.",
+                    blocking_reason="\n".join(failed_steps) if failed_steps else error,
+                    suggested_actions=[
+                        "Check the failing step output above and fix the underlying issue in the workspace.",
+                        f"Branch: `{branch_name}`" if branch_name else "No worktree branch (executed in main workspace).",
+                        "Then click Resolve to let the agent re-verify.",
+                    ],
+                    plan_context=task.plan,
+                ),
+                task_start_time=task_start_time,
+                token_tracker=token_tracker,
+                token_before=token_before,
+            )
             self._cleanup_worktree(branch_name, worktree_path)
             return False
 
@@ -319,12 +356,30 @@ class AutonomousAgentV2:
         self.obs.verify_result(task.id, verification.passed, verification.summary)
 
         if not verification.passed:
-            task.status = TaskStatus.FAILED.value
-            task.error_message = f"Verification failed: {verification.summary}"
-            self._finalize_costs(task, task_start_time, token_tracker, token_before)
-            self.store.update_task(task)
-            self.obs.task_failed(task.id, task.error_message[:120])
-            self._extract_and_store_learnings(task, "failed")
+            failed_checks = [
+                f"  [{c.name}] {c.output[:200]}"
+                for c in verification.checks if not c.passed
+            ]
+            self._mark_task_needs_human(
+                task,
+                failure_message=f"Verification failed: {verification.summary}",
+                human_request=self._build_help_request(
+                    phase="Verification",
+                    task=task,
+                    what_happened="Post-execution verification checks did not pass.",
+                    blocking_reason="\n".join(failed_checks) if failed_checks else verification.summary,
+                    suggested_actions=[
+                        "Review the failing checks above and fix the issues in the workspace.",
+                        f"Changed files: {', '.join(f'`{f}`' for f in changed_files)}" if changed_files else "No changed files recorded.",
+                        f"Branch: `{branch_name}`" if branch_name else "No worktree branch.",
+                        "Then click Resolve to let the agent re-run verification.",
+                    ],
+                    plan_context=task.plan,
+                ),
+                task_start_time=task_start_time,
+                token_tracker=token_tracker,
+                token_before=token_before,
+            )
             self._cleanup_worktree(branch_name, worktree_path)
             return False
 
@@ -350,6 +405,7 @@ class AutonomousAgentV2:
 
         # ── Finalize ──
         task.status = TaskStatus.COMPLETED.value
+        task.human_help_request = ""
         self._finalize_costs(task, task_start_time, token_tracker, token_before)
         self.store.update_task(task)
         self.obs.task_completed(task.id, task.title)
@@ -361,6 +417,130 @@ class AutonomousAgentV2:
         self._extract_and_store_learnings(task, "completed")
         self._maybe_consolidate_experience()
         return True
+
+    def _continue_verification_after_human_resolution(self, task, task_start_time: float, token_tracker, token_before) -> bool:
+        """Resume verification for a task after human manually resolved blocking issues."""
+        self._check_shutdown("verification retry after human resolution")
+
+        task.status = TaskStatus.VERIFYING.value
+        task.error_message = ""
+        self.store.update_task(task)
+
+        changed_files = self._extract_changed_files_from_execution_log(task.execution_log)
+        verification = verify_task(self.workspace, changed_files)
+        task.verification_result = format_verification(verification)
+        self.store.update_task(task)
+        self.obs.verify_result(task.id, verification.passed, verification.summary)
+
+        if not verification.passed:
+            failed_checks = [
+                f"  [{c.name}] {c.output[:200]}"
+                for c in verification.checks if not c.passed
+            ]
+            self._mark_task_needs_human(
+                task,
+                failure_message=f"Verification failed after human resolve: {verification.summary}",
+                human_request=self._build_help_request(
+                    phase="Re-verification (after human resolve)",
+                    task=task,
+                    what_happened="Verification still fails after your previous fix. The issue was not fully resolved.",
+                    blocking_reason="\n".join(failed_checks) if failed_checks else verification.summary,
+                    suggested_actions=[
+                        "Review the remaining failures above.",
+                        f"Previously changed files: {', '.join(f'`{f}`' for f in changed_files)}" if changed_files else "Could not determine changed files from log.",
+                        "Fix the remaining issues and click Resolve again.",
+                    ],
+                ),
+                task_start_time=task_start_time,
+                token_tracker=token_tracker,
+                token_before=token_before,
+            )
+            return False
+
+        task.status = TaskStatus.COMPLETED.value
+        task.human_help_request = ""
+        self._finalize_costs(task, task_start_time, token_tracker, token_before)
+        self.store.update_task(task)
+        self.obs.task_completed(task.id, task.title)
+        self.obs.system_event(
+            "task_cost",
+            f"tokens={task.token_cost} time={task.time_cost_seconds:.1f}s",
+        )
+        self._extract_and_store_learnings(task, "completed")
+        self._maybe_consolidate_experience()
+        return True
+
+    def _mark_task_needs_human(
+        self,
+        task,
+        *,
+        failure_message: str,
+        human_request: str,
+        task_start_time: float,
+        token_tracker,
+        token_before,
+    ) -> bool:
+        """Persist a blocked task as needs_human with a concrete request for a human."""
+        task.status = TaskStatus.NEEDS_HUMAN.value
+        task.error_message = failure_message
+        task.human_help_request = human_request
+        self._finalize_costs(task, task_start_time, token_tracker, token_before)
+        self.store.update_task(task)
+        self.obs.task_needs_human(task.id, failure_message[:120])
+        self.obs.system_event(
+            "help_requested",
+            f"task={task.id[:8]} {human_request[:200]}",
+            success=False,
+        )
+        self._extract_and_store_learnings(task, "failed")
+        return False
+
+    @staticmethod
+    def _build_help_request(
+        *,
+        phase: str,
+        task,
+        what_happened: str,
+        blocking_reason: str,
+        suggested_actions: list[str],
+        plan_context: str = "",
+    ) -> str:
+        """Build a structured, actionable help request for the human dashboard."""
+        lines = [
+            f"## Task: {task.title}",
+            f"   ID: {task.id}  |  Source: {task.source}  |  Branch: {task.branch_name or 'N/A'}",
+            "",
+            f"## Blocked at: {phase}",
+            "",
+            f"### What happened",
+            what_happened,
+            "",
+            f"### Error detail",
+            blocking_reason[:1500],
+        ]
+        if plan_context:
+            lines += ["", "### Execution plan (for reference)", plan_context[:800]]
+        lines += ["", "### Suggested actions"]
+        for i, action in enumerate(suggested_actions, 1):
+            lines.append(f"  {i}. {action}")
+        return "\n".join(lines)
+
+    _LOG_LINE_RE = re.compile(
+        r"^\[\d+\]\s+OK\s+(edit_file|create_file|replace_in_file)\s+(\S+)"
+    )
+
+    @classmethod
+    def _extract_changed_files_from_execution_log(cls, execution_log: str) -> list[str]:
+        """Recover changed file targets from execution log for verification retries."""
+        changed_files: list[str] = []
+        for line in execution_log.splitlines():
+            m = cls._LOG_LINE_RE.match(line.strip())
+            if not m:
+                continue
+            target = m.group(2)
+            if target not in changed_files:
+                changed_files.append(target)
+        return changed_files
 
     def _finalize_costs(self, task, start_time: float, tracker, snap_before) -> None:
         task.time_cost_seconds = round(time.monotonic() - start_time, 2)

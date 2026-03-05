@@ -4,6 +4,7 @@ import type {
   CycleSummary,
   DashboardStats,
   DirectivePayload,
+  ExperienceEntry,
   LlmAuditEntry,
   TaskDetail,
   TaskEvent,
@@ -11,7 +12,7 @@ import type {
 } from './types/dashboard'
 import './App.css'
 
-type DashboardTab = 'tasks' | 'detail' | 'cycles' | 'activity' | 'audit' | 'control' | 'inject'
+type DashboardTab = 'tasks' | 'detail' | 'cycles' | 'activity' | 'audit' | 'help' | 'experience' | 'control' | 'inject'
 
 const STATUS_CLASS: Record<string, string> = {
   queued: 'badge-queued',
@@ -19,6 +20,8 @@ const STATUS_CLASS: Record<string, string> = {
   running: 'badge-running',
   executing: 'badge-executing',
   completed: 'badge-completed',
+  needs_human: 'badge-needs-human',
+  human_resolved: 'badge-human-resolved',
   failed: 'badge-failed',
   cancelled: 'badge-cancelled',
   discovered: 'badge-discovered',
@@ -217,6 +220,9 @@ function DashboardRoot() {
 
   const [audit, setAudit] = useState<LlmAuditEntry[]>([])
   const [auditDetail, setAuditDetail] = useState<Record<string, unknown> | null>(null)
+  const [helpRequests, setHelpRequests] = useState<TaskSummary[]>([])
+  const [helpCount, setHelpCount] = useState<number>(0)
+  const [experiences, setExperiences] = useState<ExperienceEntry[]>([])
 
   const [injectTitle, setInjectTitle] = useState<string>('')
   const [injectDescription, setInjectDescription] = useState<string>('')
@@ -224,6 +230,7 @@ function DashboardRoot() {
   const [sourcesJson, setSourcesJson] = useState<string>('{}')
 
   const [pauseLoading, setPauseLoading] = useState<boolean>(false)
+  const [resolvingTaskId, setResolvingTaskId] = useState<string>('')
 
   const showToast = (message: string, ok = true): void => {
     setToastText(message)
@@ -243,6 +250,7 @@ function DashboardRoot() {
       setTasks(taskPayload.tasks ?? [])
       setCycles(cyclePayload.cycles ?? [])
       setStats(statsPayload)
+      setHelpCount(Number(statsPayload.status_counts?.needs_human ?? 0))
       setDirective(directivePayload)
       setSourcesJson(JSON.stringify(directivePayload.task_sources ?? {}, null, 2))
       setMetaText(`updated ${formatTime(taskPayload.updated_at)} · auto-refresh 5s`)
@@ -314,6 +322,50 @@ function DashboardRoot() {
       showToast(`Failed to load audit detail: ${String(error)}`, false)
     }
   }, [])
+
+  const refreshHelpCenter = useCallback(async (): Promise<void> => {
+    try {
+      const payload = await dashboardApiClient.getHelpCenter()
+      setHelpRequests(payload.requests ?? [])
+    } catch (error) {
+      showToast(`Failed to refresh help center: ${String(error)}`, false)
+    }
+  }, [])
+
+  const refreshExperiences = useCallback(async (): Promise<void> => {
+    try {
+      const payload = await dashboardApiClient.getExperiences(200)
+      setExperiences(payload.experiences ?? [])
+    } catch (error) {
+      showToast(`Failed to refresh experiences: ${String(error)}`, false)
+    }
+  }, [])
+
+  const resolveHelpRequest = async (taskId: string): Promise<void> => {
+    if (resolvingTaskId) return
+    const resolution = window.prompt(
+      'Describe what you resolved (or leave blank):',
+      '',
+    )
+    if (resolution === null) return
+    setResolvingTaskId(taskId)
+    try {
+      const payload = await dashboardApiClient.resolveHelpRequest({
+        task_id: taskId,
+        resolution: resolution || 'Resolved via dashboard',
+      })
+      if (payload.error) {
+        showToast(payload.error, false)
+        return
+      }
+      showToast('Marked resolved, agent will continue verification')
+      await Promise.all([refreshSummary(), refreshHelpCenter()])
+    } catch (error) {
+      showToast(`Resolve failed: ${String(error)}`, false)
+    } finally {
+      setResolvingTaskId('')
+    }
+  }
 
   const saveDirective = async (event: React.FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault()
@@ -401,6 +453,26 @@ function DashboardRoot() {
     }
   }, [activeTab, refreshAudit])
 
+  useEffect(() => {
+    if (activeTab !== 'help') return
+    const kickoffId = window.setTimeout(() => void refreshHelpCenter(), 0)
+    const timerId = window.setInterval(() => void refreshHelpCenter(), 5000)
+    return () => {
+      window.clearTimeout(kickoffId)
+      window.clearInterval(timerId)
+    }
+  }, [activeTab, refreshHelpCenter])
+
+  useEffect(() => {
+    if (activeTab !== 'experience') return
+    const kickoffId = window.setTimeout(() => void refreshExperiences(), 0)
+    const timerId = window.setInterval(() => void refreshExperiences(), 8000)
+    return () => {
+      window.clearTimeout(kickoffId)
+      window.clearInterval(timerId)
+    }
+  }, [activeTab, refreshExperiences])
+
   const sortedStatus = useMemo(() => {
     return Object.entries(stats.status_counts ?? {}).sort((left, right) => Number(right[1]) - Number(left[1]))
   }, [stats])
@@ -443,6 +515,10 @@ function DashboardRoot() {
         <button data-active={activeTab === 'cycles'} onClick={() => setActiveTab('cycles')}>Cycles</button>
         <button data-active={activeTab === 'activity'} onClick={() => setActiveTab('activity')}>Activity</button>
         <button data-active={activeTab === 'audit'} onClick={() => setActiveTab('audit')}>LLM Audit</button>
+        <button data-active={activeTab === 'help'} onClick={() => setActiveTab('help')}>
+          Help Center {helpCount > 0 ? `(${helpCount})` : ''}
+        </button>
+        <button data-active={activeTab === 'experience'} onClick={() => setActiveTab('experience')}>Experience</button>
         <button data-active={activeTab === 'control'} onClick={() => setActiveTab('control')}>Control</button>
         <button data-active={activeTab === 'inject'} onClick={() => setActiveTab('inject')}>Inject</button>
       </nav>
@@ -560,6 +636,13 @@ function DashboardRoot() {
               <div className="detail-section">
                 <h3 className="detail-section-title" style={{ color: 'var(--danger)' }}>Error</h3>
                 <pre style={{ borderColor: 'rgba(248,81,73,0.3)', color: 'var(--danger)' }}>{taskDetail.error_message}</pre>
+              </div>
+            ) : null}
+
+            {taskDetail.human_help_request ? (
+              <div className="detail-section">
+                <h3 className="detail-section-title" style={{ color: 'var(--warn)' }}>Human Help Request</h3>
+                <pre style={{ borderColor: 'rgba(210,153,34,0.3)', color: 'var(--warn)' }}>{taskDetail.human_help_request}</pre>
               </div>
             ) : null}
 
@@ -758,6 +841,95 @@ function DashboardRoot() {
               <pre>{JSON.stringify(auditDetail, null, 2)}</pre>
             </div>
           ) : null}
+        </section>
+      ) : null}
+
+      {/* ── Help Center ─── */}
+      {activeTab === 'help' ? (
+        <section className="panel">
+          <table>
+            <thead>
+              <tr>
+                <th style={{ minWidth: 240 }}>Task</th>
+                <th>Need Human Help</th>
+                <th>Status</th>
+                <th>Updated</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {helpRequests.map((task) => (
+                <tr key={task.id}>
+                  <td>
+                    <strong>{task.title}</strong>
+                    <small>{task.id}</small>
+                  </td>
+                  <td>
+                    <div className="help-request-cell">
+                      {task.human_help_request || 'No detail provided'}
+                    </div>
+                  </td>
+                  <td>
+                    <span className={`badge ${STATUS_CLASS[task.status] ?? ''}`}>
+                      {task.status}
+                    </span>
+                  </td>
+                  <td className="numeric">{formatDateTime(task.updated_at)}</td>
+                  <td>
+                    <button
+                      type="button"
+                      className="resolve-btn"
+                      disabled={resolvingTaskId === task.id}
+                      onClick={() => void resolveHelpRequest(task.id)}
+                    >
+                      {resolvingTaskId === task.id ? 'Resolving...' : 'Resolve'}
+                    </button>
+                  </td>
+                </tr>
+              ))}
+              {helpRequests.length === 0 ? (
+                <tr><td colSpan={5} className="log-empty">No unresolved human-help requests</td></tr>
+              ) : null}
+            </tbody>
+          </table>
+        </section>
+      ) : null}
+
+      {/* ── Experience ─── */}
+      {activeTab === 'experience' ? (
+        <section className="panel">
+          <table>
+            <thead>
+              <tr>
+                <th>Task ID</th>
+                <th>Category</th>
+                <th style={{ minWidth: 260 }}>Summary</th>
+                <th>Confidence</th>
+                <th>Applied Count</th>
+                <th>Outcome</th>
+                <th>Created</th>
+              </tr>
+            </thead>
+            <tbody>
+              {experiences.map((exp) => (
+                <tr key={exp.id}>
+                  <td className="numeric">{exp.task_id || '-'}</td>
+                  <td><span className="source-tag">{exp.category}</span></td>
+                  <td>
+                    <div className="exp-summary">{exp.summary}</div>
+                    {exp.detail ? <small className="exp-detail">{exp.detail}</small> : null}
+                  </td>
+                  <td className="numeric">{typeof exp.confidence === 'number' ? exp.confidence.toFixed(2) : '-'}</td>
+                  <td className="numeric">{Number(exp.applied_count ?? 0)}</td>
+                  <td><span className="source-tag">{exp.source_outcome || '-'}</span></td>
+                  <td className="numeric">{formatDateTime(exp.created_at)}</td>
+                </tr>
+              ))}
+              {experiences.length === 0 ? (
+                <tr><td colSpan={7} className="log-empty">No experience entries yet</td></tr>
+              ) : null}
+            </tbody>
+          </table>
         </section>
       ) : null}
 

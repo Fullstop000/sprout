@@ -27,7 +27,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     cycle_id INTEGER DEFAULT 0,
     token_cost INTEGER DEFAULT 0,
     time_cost_seconds REAL DEFAULT 0.0,
-    whats_learned TEXT DEFAULT ''
+    whats_learned TEXT DEFAULT '',
+    human_help_request TEXT DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS task_events (
@@ -60,6 +61,7 @@ _MIGRATIONS = [
     "ALTER TABLE tasks ADD COLUMN token_cost INTEGER DEFAULT 0",
     "ALTER TABLE tasks ADD COLUMN time_cost_seconds REAL DEFAULT 0.0",
     "ALTER TABLE tasks ADD COLUMN whats_learned TEXT DEFAULT ''",
+    "ALTER TABLE tasks ADD COLUMN human_help_request TEXT DEFAULT ''",
 ]
 
 
@@ -88,6 +90,7 @@ def _row_to_task(row: sqlite3.Row) -> Task:
         token_cost=d.get("token_cost", 0) or 0,
         time_cost_seconds=d.get("time_cost_seconds", 0.0) or 0.0,
         whats_learned=d.get("whats_learned", "") or "",
+        human_help_request=d.get("human_help_request", "") or "",
     )
 
 
@@ -121,8 +124,8 @@ class TaskStore:
                    (id, title, description, source, status, priority,
                     created_at, updated_at, branch_name, pr_url, plan,
                     execution_log, verification_result, error_message, cycle_id,
-                    token_cost, time_cost_seconds, whats_learned)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    token_cost, time_cost_seconds, whats_learned, human_help_request)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     task.id, task.title, task.description, task.source,
                     task.status, task.priority,
@@ -130,7 +133,7 @@ class TaskStore:
                     task.branch_name, task.pr_url, task.plan,
                     task.execution_log, task.verification_result,
                     task.error_message, task.cycle_id,
-                    task.token_cost, task.time_cost_seconds, task.whats_learned,
+                    task.token_cost, task.time_cost_seconds, task.whats_learned, task.human_help_request,
                 ),
             )
             self._conn.commit()
@@ -143,7 +146,7 @@ class TaskStore:
                    title=?, description=?, source=?, status=?, priority=?,
                    updated_at=?, branch_name=?, pr_url=?, plan=?,
                    execution_log=?, verification_result=?, error_message=?, cycle_id=?,
-                   token_cost=?, time_cost_seconds=?, whats_learned=?
+                   token_cost=?, time_cost_seconds=?, whats_learned=?, human_help_request=?
                    WHERE id=?""",
                 (
                     task.title, task.description, task.source, task.status,
@@ -151,6 +154,7 @@ class TaskStore:
                     task.plan, task.execution_log, task.verification_result,
                     task.error_message, task.cycle_id,
                     task.token_cost, task.time_cost_seconds, task.whats_learned,
+                    task.human_help_request,
                     task.id,
                 ),
             )
@@ -188,6 +192,20 @@ class TaskStore:
             ).fetchone()
         return _row_to_task(row) if row else None
 
+    def get_next_executable_task(self) -> Optional[Task]:
+        """Pick the next executable task, prioritizing human-resolved retries."""
+        with self._lock:
+            row = self._conn.execute(
+                """SELECT * FROM tasks
+                   WHERE status IN ('human_resolved', 'queued')
+                   ORDER BY
+                     CASE status WHEN 'human_resolved' THEN 0 ELSE 1 END,
+                     priority ASC,
+                     created_at ASC
+                   LIMIT 1"""
+            ).fetchone()
+        return _row_to_task(row) if row else None
+
     def has_duplicate(self, title: str, source: str) -> bool:
         with self._lock:
             row = self._conn.execute(
@@ -213,6 +231,15 @@ class TaskStore:
                 (task_id, limit),
             ).fetchall()
         return [dict(r) for r in rows]
+
+    def list_human_help_tasks(self, limit: int = 100) -> List[Task]:
+        """List tasks that are currently blocked and waiting for human input."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM tasks WHERE status='needs_human' ORDER BY updated_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [_row_to_task(r) for r in rows]
 
     def start_cycle(self) -> int:
         with self._lock:

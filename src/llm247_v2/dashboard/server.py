@@ -12,10 +12,11 @@ from urllib.parse import parse_qs, urlparse
 
 from llm247_v2.core.directive import load_directive, save_directive
 from llm247_v2.core.models import Directive, TaskSourceConfig, TaskStatus
+from llm247_v2.storage.experience import ExperienceStore
 from llm247_v2.storage.store import TaskStore
 
 logger = logging.getLogger("llm247_v2.dashboard.server")
-_REPO_ROOT = Path(__file__).resolve().parents[2]
+_REPO_ROOT = Path(__file__).resolve().parents[3]
 _FRONTEND_DIST_DIR = _REPO_ROOT / "frontend" / "dist"
 
 
@@ -25,6 +26,7 @@ def serve_dashboard(
     host: str = "127.0.0.1",
     port: int = 8787,
     state_dir: Optional[Path] = None,
+    experience_store: Optional[ExperienceStore] = None,
 ) -> None:
     """Start HTTP control plane server."""
     _state_dir = state_dir or directive_path.parent
@@ -45,6 +47,13 @@ def serve_dashboard(
                 self._serve_json(_api_cycles(store))
             elif path == "/api/stats":
                 self._serve_json(_api_stats(store))
+            elif path == "/api/help-center":
+                self._serve_json(_api_help_center(store))
+            elif path == "/api/experiences":
+                limit = int(qs.get("limit", ["100"])[0])
+                category = qs.get("category", [""])[0]
+                query = qs.get("q", [""])[0]
+                self._serve_json(_api_experiences(experience_store, limit=limit, category=category, query=query))
             elif path == "/api/directive":
                 self._serve_json(_api_get_directive(directive_path))
             elif path == "/api/activity":
@@ -79,6 +88,9 @@ def serve_dashboard(
             elif self.path == "/api/tasks/inject":
                 body = self._read_body()
                 self._serve_json(_api_inject_task(store, body))
+            elif self.path == "/api/help-center/resolve":
+                body = self._read_body()
+                self._serve_json(_api_resolve_help_request(store, body))
             else:
                 self.send_error(HTTPStatus.NOT_FOUND)
 
@@ -177,6 +189,62 @@ def _api_cycles(store: TaskStore) -> dict:
 
 def _api_stats(store: TaskStore) -> dict:
     return store.get_stats()
+
+
+def _api_help_center(store: TaskStore) -> dict:
+    """List unresolved tasks that currently require human intervention."""
+    tasks = store.list_human_help_tasks(limit=200)
+    return {
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "requests": [_task_row(task) for task in tasks],
+    }
+
+
+def _api_resolve_help_request(store: TaskStore, body: dict) -> dict:
+    """Resolve one human-help request and queue it for verification retry."""
+    task_id = str(body.get("task_id", "")).strip()
+    if not task_id:
+        return {"error": "task_id required"}
+
+    task = store.get_task(task_id)
+    if not task:
+        return {"error": "task not found"}
+    if task.status != TaskStatus.NEEDS_HUMAN.value:
+        return {"error": f"task status must be {TaskStatus.NEEDS_HUMAN.value}"}
+
+    resolution = str(body.get("resolution", "")).strip()
+    task.status = TaskStatus.HUMAN_RESOLVED.value
+    task.human_help_request = ""
+    store.update_task(task)
+    detail = f"Resolved via dashboard. {resolution}".strip()
+    store.add_event(task.id, "human_resolved", detail)
+    return {"status": "ok", "task_id": task.id, "next_status": task.status}
+
+
+def _api_experiences(
+    experience_store: Optional[ExperienceStore],
+    *,
+    limit: int = 100,
+    category: str = "",
+    query: str = "",
+) -> dict:
+    """List experiences so dashboard can show long-term memory contents."""
+    if experience_store is None:
+        return {"experiences": [], "total": 0, "updated_at": datetime.now(timezone.utc).isoformat()}
+
+    safe_limit = max(1, min(500, limit))
+    if query:
+        experiences = experience_store.search(query, limit=safe_limit)
+    elif category:
+        experiences = experience_store.get_by_category(category, limit=safe_limit)
+    else:
+        experiences = experience_store.get_recent(limit=safe_limit)
+
+    return {
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "total": len(experiences),
+        "experiences": [_experience_row(exp) for exp in experiences],
+    }
 
 
 def _api_get_directive(path: Path) -> dict:
@@ -345,6 +413,7 @@ def _task_row(t) -> Dict:
         "token_cost": t.token_cost,
         "time_cost_seconds": t.time_cost_seconds,
         "whats_learned": t.whats_learned[:200] if t.whats_learned else "",
+        "human_help_request": t.human_help_request[:500] if t.human_help_request else "",
     }
 
 
@@ -362,7 +431,24 @@ def _task_full(t) -> Dict:
         "token_cost": t.token_cost,
         "time_cost_seconds": t.time_cost_seconds,
         "whats_learned": t.whats_learned,
+        "human_help_request": t.human_help_request,
         "cycle_id": t.cycle_id,
+    }
+
+
+def _experience_row(exp) -> Dict:
+    """Serialize one experience row for dashboard JSON responses."""
+    return {
+        "id": exp.id,
+        "task_id": exp.task_id,
+        "category": exp.category,
+        "summary": exp.summary,
+        "detail": exp.detail,
+        "tags": exp.tags,
+        "confidence": exp.confidence,
+        "created_at": exp.created_at,
+        "applied_count": exp.applied_count,
+        "source_outcome": exp.source_outcome,
     }
 
 
