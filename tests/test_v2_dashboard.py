@@ -6,10 +6,23 @@ import unittest
 import urllib.request
 from pathlib import Path
 
-from llm247_v2.dashboard.server import serve_dashboard, _api_tasks, _api_stats, _api_inject_task, _api_task_detail, _api_set_paused, _task_row, _task_full
+from llm247_v2.dashboard.server import (
+    _api_experiences,
+    _api_help_center,
+    _api_inject_task,
+    _api_resolve_help_request,
+    _api_set_paused,
+    _api_stats,
+    _api_task_detail,
+    _api_tasks,
+    _task_full,
+    _task_row,
+    serve_dashboard,
+)
 from llm247_v2.core.directive import load_directive, save_directive
-from llm247_v2.core.models import Directive, Task
+from llm247_v2.core.models import Directive, Task, TaskStatus
 from llm247_v2.storage.store import TaskStore
+from llm247_v2.storage.experience import Experience, ExperienceStore
 
 
 class TestDashboardAPI(unittest.TestCase):
@@ -17,11 +30,13 @@ class TestDashboardAPI(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.db_path = Path(self.tmp.name) / "test.db"
         self.store = TaskStore(self.db_path)
+        self.exp_store = ExperienceStore(Path(self.tmp.name) / "experience.db")
         self.directive_path = Path(self.tmp.name) / "directive.json"
         save_directive(self.directive_path, Directive())
 
     def tearDown(self):
         self.store.close()
+        self.exp_store.close()
         self.tmp.cleanup()
 
     def test_api_tasks_empty(self):
@@ -57,6 +72,70 @@ class TestDashboardAPI(unittest.TestCase):
     def test_inject_no_title(self):
         result = _api_inject_task(self.store, {})
         self.assertIn("error", result)
+
+    def test_help_center_lists_only_needs_human(self):
+        needs_help = Task(
+            id="h1",
+            title="Needs Human",
+            description="blocked",
+            source="manual",
+            status=TaskStatus.NEEDS_HUMAN.value,
+            priority=1,
+            human_help_request="Please resolve credentials issue in runtime env.",
+        )
+        normal = Task(
+            id="q1",
+            title="Queued",
+            description="normal",
+            source="manual",
+            status=TaskStatus.QUEUED.value,
+            priority=2,
+        )
+        self.store.insert_task(needs_help)
+        self.store.insert_task(normal)
+
+        result = _api_help_center(self.store)
+        self.assertEqual(len(result["requests"]), 1)
+        self.assertEqual(result["requests"][0]["id"], "h1")
+        self.assertIn("credentials issue", result["requests"][0]["human_help_request"])
+
+    def test_help_center_resolve_transitions_to_human_resolved(self):
+        task = Task(
+            id="h2",
+            title="Need resolve",
+            description="blocked",
+            source="manual",
+            status=TaskStatus.NEEDS_HUMAN.value,
+            priority=2,
+            human_help_request="Please fix flaky external service.",
+        )
+        self.store.insert_task(task)
+
+        result = _api_resolve_help_request(self.store, {"task_id": "h2", "resolution": "Service restored"})
+        self.assertEqual(result["status"], "ok")
+
+        updated = self.store.get_task("h2")
+        self.assertEqual(updated.status, TaskStatus.HUMAN_RESOLVED.value)
+        self.assertEqual(updated.human_help_request, "")
+
+        events = self.store.get_events("h2")
+        self.assertTrue(any(e["event_type"] == "human_resolved" for e in events))
+
+    def test_experiences_returns_recent_entries(self):
+        self.exp_store.add(
+            Experience(
+                id="exp1",
+                task_id="t1",
+                category="insight",
+                summary="Always check task status transitions.",
+                detail="A missing transition can stall the queue.",
+                confidence=0.9,
+            )
+        )
+        result = _api_experiences(self.exp_store, limit=10, category="", query="")
+        self.assertEqual(result["total"], 1)
+        self.assertEqual(result["experiences"][0]["id"], "exp1")
+        self.assertEqual(result["experiences"][0]["category"], "insight")
 
 
 class TestPauseResumeAPI(unittest.TestCase):

@@ -6,6 +6,7 @@ export interface TaskSummary {
   source: string
   status: string
   priority: number
+  human_help_request?: string
   updated_at?: string
   branch_name?: string
   pr_url?: string
@@ -78,4 +79,18 @@ export interface LlmAuditEntry {
   total_tokens?: number
   duration_ms?: number
   error?: string
+}
+
+/** Long-term memory row returned by /api/experiences. */
+export interface ExperienceEntry {
+  id: string
+  task_id: string
+  category: string
+  summary: string
+  detail?: string
+  tags?: string
+  confidence?: number
+  created_at?: string
+  applied_count?: number
+  source_outcome?: string
 }

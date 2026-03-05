@@ -434,6 +434,9 @@ class Observer:
     def task_failed(self, task_id: str, reason: str) -> None:
         self.emit(AgentEvent(phase="execute", action="task_failed", task_id=task_id, detail=reason[:120], success=False))
 
+    def task_needs_human(self, task_id: str, reason: str) -> None:
+        self.emit(AgentEvent(phase="execute", action="task_needs_human", task_id=task_id, detail=reason[:120], success=False))
+
     def decision(self, description: str, reasoning: str, task_id: str = "") -> None:
         self.emit(AgentEvent(phase="decision", action="made", task_id=task_id, detail=description, reasoning=reasoning))
 
