@@ -506,8 +506,14 @@ See design docs for full details:
 
 ### V2 Source Location
 
-**Rule:** V2 autonomous agent lives in `src/llm247_v2/`. V1 code in `src/llm247/` is preserved for reference but not actively developed.
-**Why:** Clean separation allows safe migration.
+**Rule:** The only supported agent runtime lives in `src/llm247_v2/`.
+**Why:** The repository has completed its migration to V2. A single runtime eliminates ambiguous entry points and removes legacy maintenance overhead.
+
+### 2026-03-06 — V1 Removal
+
+**Rule:** Do not recreate `src/llm247/`, legacy startup scripts, or legacy non-`test_v2_*` test suites unless a new migration plan is explicitly approved and documented first.
+**Why:** V1 was intentionally removed to make the repository V2-only. Reintroducing parallel runtime paths would restore accidental complexity without current product value.
+**See also:** `docs/plans/2026-03-06-remove-llm247-v1-design.md`
 
 ### Directive-Driven Behavior Control
 
@@ -541,8 +547,8 @@ See design docs for full details:
 
 ### Test Naming Convention
 
-**Rule:** V2 test files use `test_v2_*.py` prefix to coexist with V1 tests.
-**Why:** Allows running V1 and V2 tests independently. Run all V2 tests: `PYTHONPATH=src python -m pytest tests/test_v2_*.py`
+**Rule:** Maintained runtime tests use the `test_v2_*.py` prefix.
+**Why:** The repository now validates only the V2 runtime, so the prefix distinguishes agent-runtime tests from broader repository tests. Run all maintained runtime tests with `PYTHONPATH=src python3 -m unittest discover -s tests -p "test_v2_*.py" -v`.
 
 ### Human Review Protocol (Early Stage)
 

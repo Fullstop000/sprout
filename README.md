@@ -6,6 +6,8 @@ Sprout is an autonomous engineering agent that runs 24/7 — discovering what in
 
 The agent on day 1 and the agent on day 90 are fundamentally different. The second one is better — and it made itself that way.
 
+The repository now ships a single supported runtime: `src/llm247_v2/`.
+
 ## What Sprout Does
 
 |                      |                                                                                                                                                            |
