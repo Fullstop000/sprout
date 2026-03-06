@@ -54,16 +54,12 @@ def _check_syntax(workspace: Path, changed_files: List[str]) -> CheckResult:
         if not full_path.exists():
             continue
         try:
-            result = subprocess.run(
-                ["python3", "-m", "py_compile", str(full_path)],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            if result.returncode != 0:
-                errors.append(f"{filepath}: {result.stderr.strip()[:200]}")
-        except (subprocess.TimeoutExpired, OSError):
-            errors.append(f"{filepath}: check timed out")
+            source = full_path.read_text(encoding="utf-8")
+            compile(source, str(full_path), "exec")
+        except SyntaxError as error:
+            errors.append(f"{filepath}: {error.msg} (line {error.lineno})")
+        except OSError as error:
+            errors.append(f"{filepath}: failed to read file ({error})")
 
     if errors:
         return CheckResult(name="syntax", passed=False, output="\n".join(errors))
