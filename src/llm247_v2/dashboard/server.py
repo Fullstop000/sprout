@@ -3,21 +3,64 @@ from __future__ import annotations
 import json
 import logging
 import mimetypes
+import threading
+import time
 from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 from urllib.parse import parse_qs, urlparse
 
 from llm247_v2.core.directive import load_directive, save_directive
 from llm247_v2.core.models import Directive, TaskSourceConfig, TaskStatus
+from llm247_v2.llm.client import probe_registered_model_connection
+from llm247_v2.storage.model_registry import MODEL_BINDING_SPECS, ModelRegistryStore
 from llm247_v2.storage.experience import ExperienceStore
 from llm247_v2.storage.store import TaskStore
 
 logger = logging.getLogger("llm247_v2.dashboard.server")
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _FRONTEND_DIST_DIR = _REPO_ROOT / "frontend" / "dist"
+
+
+class ModelConnectionChecker:
+    """Cache model connection probes so the dashboard can show recent status."""
+
+    def __init__(
+        self,
+        *,
+        ttl_seconds: float = 30.0,
+        probe_func: Callable[..., tuple[bool, str]] = probe_registered_model_connection,
+    ) -> None:
+        self._ttl_seconds = ttl_seconds
+        self._probe_func = probe_func
+        self._lock = threading.Lock()
+        self._cache: dict[str, dict[str, object]] = {}
+
+    def get_status(self, model) -> dict[str, str]:
+        """Return cached or freshly probed connectivity for one registered model."""
+        cache_key = model.id
+        with self._lock:
+            cached = self._cache.get(cache_key)
+            if cached and cached.get("updated_at") == model.updated_at:
+                checked_monotonic = float(cached.get("checked_monotonic", 0.0))
+                if time.monotonic() - checked_monotonic <= self._ttl_seconds:
+                    return dict(cached["payload"])
+
+        success, message = self._probe_func(model)
+        payload = {
+            "connection_status": "success" if success else "fail",
+            "connection_message": message,
+            "connection_checked_at": datetime.now(timezone.utc).isoformat(),
+        }
+        with self._lock:
+            self._cache[cache_key] = {
+                "updated_at": model.updated_at,
+                "checked_monotonic": time.monotonic(),
+                "payload": payload,
+            }
+        return dict(payload)
 
 
 def serve_dashboard(
@@ -27,9 +70,12 @@ def serve_dashboard(
     port: int = 8787,
     state_dir: Optional[Path] = None,
     experience_store: Optional[ExperienceStore] = None,
+    model_store: Optional[ModelRegistryStore] = None,
+    bootstrap_status_provider: Optional[Callable[[], dict]] = None,
 ) -> None:
     """Start HTTP control plane server."""
     _state_dir = state_dir or directive_path.parent
+    connection_checker = ModelConnectionChecker()
 
     class Handler(BaseHTTPRequestHandler):
 
@@ -56,6 +102,10 @@ def serve_dashboard(
                 self._serve_json(_api_experiences(experience_store, limit=limit, category=category, query=query))
             elif path == "/api/directive":
                 self._serve_json(_api_get_directive(directive_path))
+            elif path == "/api/models":
+                self._serve_json(_api_models(model_store, connection_status_provider=connection_checker.get_status))
+            elif path == "/api/bootstrap-status":
+                self._serve_json(_api_bootstrap_status(model_store, bootstrap_status_provider))
             elif path == "/api/activity":
                 limit = int(qs.get("limit", ["200"])[0])
                 phase = qs.get("phase", [""])[0]
@@ -78,6 +128,12 @@ def serve_dashboard(
             if self.path == "/api/directive":
                 body = self._read_body()
                 self._serve_json(_api_set_directive(directive_path, body))
+            elif self.path == "/api/models":
+                body = self._read_body()
+                self._serve_json(_api_register_model(model_store, body))
+            elif self.path == "/api/model-bindings":
+                body = self._read_body()
+                self._serve_json(_api_set_model_bindings(model_store, body))
             elif self.path == "/api/pause":
                 self._serve_json(_api_set_paused(directive_path, paused=True))
             elif self.path == "/api/resume":
@@ -91,6 +147,21 @@ def serve_dashboard(
             elif self.path == "/api/help-center/resolve":
                 body = self._read_body()
                 self._serve_json(_api_resolve_help_request(store, body))
+            else:
+                self.send_error(HTTPStatus.NOT_FOUND)
+
+        def do_PUT(self) -> None:
+            if self.path.startswith("/api/models/"):
+                model_id = self.path.split("/api/models/")[1].split("?")[0]
+                body = self._read_body()
+                self._serve_json(_api_update_model(model_store, model_id, body))
+            else:
+                self.send_error(HTTPStatus.NOT_FOUND)
+
+        def do_DELETE(self) -> None:
+            if self.path.startswith("/api/models/"):
+                model_id = self.path.split("/api/models/")[1].split("?")[0]
+                self._serve_json(_api_delete_model(model_store, model_id))
             else:
                 self.send_error(HTTPStatus.NOT_FOUND)
 
@@ -261,6 +332,125 @@ def _api_get_directive(path: Path) -> dict:
         "task_sources": sources,
         "poll_interval_seconds": d.poll_interval_seconds,
     }
+
+
+def _api_models(
+    model_store: Optional[ModelRegistryStore],
+    connection_status_provider: Optional[Callable[[object], dict[str, str]]] = None,
+) -> dict:
+    """List registered models, runtime bindings, and binding-point metadata."""
+    models = model_store.list_models() if model_store else []
+    bindings = model_store.list_bindings() if model_store else {}
+    return {
+        "models": [
+            _registered_model_row(
+                model,
+                connection_status=connection_status_provider(model) if connection_status_provider else None,
+            )
+            for model in models
+        ],
+        "bindings": {
+            binding_point: {
+                "model_id": binding.model_id,
+                "updated_at": binding.updated_at,
+            }
+            for binding_point, binding in bindings.items()
+        },
+        "binding_points": [
+            {
+                "binding_point": spec.binding_point,
+                "label": spec.label,
+                "description": spec.description,
+                "model_type": spec.model_type,
+            }
+            for spec in MODEL_BINDING_SPECS
+        ],
+    }
+
+
+def _api_bootstrap_status(
+    model_store: Optional[ModelRegistryStore],
+    bootstrap_status_provider: Optional[Callable[[], dict]] = None,
+) -> dict:
+    """Expose startup readiness so the dashboard can guide initialization."""
+    if bootstrap_status_provider is not None:
+        return bootstrap_status_provider()
+    ready = model_store is not None and model_store.get_default_model() is not None
+    missing = [] if ready else ["default_llm"]
+    return {
+        "ready": ready,
+        "requires_setup": not ready,
+        "missing": missing,
+        "recommended_tab": "models",
+        "message": (
+            "Register at least one llm model in the Models page to finish initialization."
+            if not ready
+            else "Runtime prerequisites satisfied."
+        ),
+    }
+
+
+def _api_register_model(model_store: Optional[ModelRegistryStore], body: dict) -> dict:
+    """Register one model for later binding from the dashboard."""
+    if model_store is None:
+        return {"error": "model registry unavailable"}
+    try:
+        model = model_store.register_model(
+            model_type=str(body.get("model_type", "")),
+            base_url=str(body.get("base_url", "")),
+            api_path=str(body.get("api_path", "")),
+            model_name=str(body.get("model_name", "")),
+            api_key=str(body.get("api_key", "")),
+            desc=str(body.get("desc", "")),
+        )
+    except ValueError as exc:
+        return {"error": str(exc)}
+    return {"status": "ok", "model": _registered_model_row(model)}
+
+
+def _api_update_model(model_store: Optional[ModelRegistryStore], model_id: str, body: dict) -> dict:
+    """Update one registered model from dashboard edit actions."""
+    if model_store is None:
+        return {"error": "model registry unavailable"}
+    try:
+        model = model_store.update_model(
+            model_id,
+            model_type=str(body.get("model_type", "")),
+            base_url=str(body.get("base_url", "")),
+            api_path=str(body.get("api_path", "")),
+            model_name=str(body.get("model_name", "")),
+            api_key=str(body.get("api_key", "")),
+            desc=str(body.get("desc", "")),
+        )
+    except ValueError as exc:
+        return {"error": str(exc)}
+    return {"status": "ok", "model": _registered_model_row(model)}
+
+
+def _api_delete_model(model_store: Optional[ModelRegistryStore], model_id: str) -> dict:
+    """Delete one registered model and clear bindings that referenced it."""
+    if model_store is None:
+        return {"error": "model registry unavailable"}
+    try:
+        model_store.delete_model(model_id)
+    except ValueError as exc:
+        return {"error": str(exc)}
+    return {"status": "ok", "model_id": model_id}
+
+
+def _api_set_model_bindings(model_store: Optional[ModelRegistryStore], body: dict) -> dict:
+    """Persist dashboard-selected runtime model bindings."""
+    if model_store is None:
+        return {"error": "model registry unavailable"}
+    bindings = body.get("bindings", {})
+    if not isinstance(bindings, dict):
+        return {"error": "bindings must be an object"}
+    try:
+        for binding_point, model_id in bindings.items():
+            model_store.set_binding(str(binding_point), str(model_id))
+    except ValueError as exc:
+        return {"error": str(exc)}
+    return {"status": "ok", "bindings": _api_models(model_store)["bindings"]}
 
 
 def _api_set_paused(path: Path, *, paused: bool) -> dict:
@@ -450,6 +640,32 @@ def _experience_row(exp) -> Dict:
         "applied_count": exp.applied_count,
         "source_outcome": exp.source_outcome,
     }
+
+
+def _registered_model_row(model, connection_status: Optional[dict[str, str]] = None) -> Dict:
+    """Serialize one registered model without exposing the full API key."""
+    row = {
+        "id": model.id,
+        "model_type": model.model_type,
+        "base_url": model.base_url,
+        "api_path": model.api_path,
+        "model_name": model.model_name,
+        "api_key_preview": _mask_api_key(model.api_key),
+        "desc": model.desc,
+        "created_at": model.created_at,
+        "updated_at": model.updated_at,
+    }
+    if connection_status:
+        row.update(connection_status)
+    return row
+
+
+def _mask_api_key(api_key: str) -> str:
+    """Return a short preview for a secret without leaking the full value."""
+    clean = str(api_key).strip()
+    if len(clean) <= 4:
+        return "*" * len(clean)
+    return f"{clean[:2]}***{clean[-2:]}"
 
 
 def _dashboard_html() -> str:

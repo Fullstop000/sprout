@@ -19,7 +19,9 @@ from llm247_v2.discovery.pipeline import (
     discover_and_evaluate,
 )
 from llm247_v2.discovery.exploration import ExplorationMap
-from llm247_v2.core.models import Directive
+from llm247_v2.core.models import Directive, ModelBindingPoint, Task
+from llm247_v2.discovery.exploration import Strategy
+from llm247_v2.discovery.value import TaskValue
 
 
 class FakeLLM:
@@ -30,6 +32,16 @@ class FakeLLM:
     def generate(self, prompt: str) -> str:
         self.calls.append(prompt)
         return self.response
+
+
+class FakeRouter:
+    def __init__(self, mapping):
+        self.mapping = mapping
+        self.points = []
+
+    def for_point(self, point: str):
+        self.points.append(point)
+        return self.mapping[point]
 
 
 class TestMakeId(unittest.TestCase):
@@ -187,6 +199,58 @@ class TestDiscoverAndEvaluate(unittest.TestCase):
             )
             self.assertEqual(len(tasks), 0)
             self.assertIn("Skipping", log)
+
+    def test_uses_distinct_binding_points_for_discovery_and_value(self):
+        discovery_llm = FakeLLM()
+        value_llm = FakeLLM()
+        router = FakeRouter({
+            ModelBindingPoint.DISCOVERY_GENERATION.value: discovery_llm,
+            ModelBindingPoint.TASK_VALUE.value: value_llm,
+        })
+        emap = ExplorationMap()
+        directive = Directive()
+        constitution = _default_constitution()
+        raw_tasks = [
+            Task(
+                id=f"t{i}",
+                title=f"Fix syntax error {i}",
+                description=f"File: src/file{i}.py\nLine: {i + 1}\nContent: syntax error",
+                source="lint_check",
+            )
+            for i in range(4)
+        ]
+        llm_values = [TaskValue(task.id, 0.9, [], "execute", True) for task in raw_tasks]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch(
+                "llm247_v2.discovery.pipeline.select_strategy",
+                return_value=Strategy("llm_guided", "guided", [], "deep"),
+            ):
+                with patch(
+                    "llm247_v2.discovery.pipeline._llm_guided_discovery",
+                    side_effect=lambda workspace, directive, constitution, llm, existing: (
+                        self.assertIs(llm, discovery_llm) or raw_tasks
+                    ),
+                ) as discovery_mock:
+                    with patch(
+                        "llm247_v2.discovery.pipeline.assess_tasks_with_llm",
+                        side_effect=lambda tasks, constitution, directive, llm: (
+                            self.assertIs(llm, value_llm) or llm_values
+                        ),
+                    ) as value_mock:
+                        tasks, _ = discover_and_evaluate(
+                            workspace=Path(tmp),
+                            directive=directive,
+                            constitution=constitution,
+                            llm=router,
+                            emap=emap,
+                            existing_titles=set(),
+                            queued_count=0,
+                        )
+
+        self.assertEqual(len(tasks), 4)
+        self.assertEqual(discovery_mock.call_count, 1)
+        self.assertEqual(value_mock.call_count, 1)
 
 
 if __name__ == "__main__":

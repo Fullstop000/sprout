@@ -506,8 +506,20 @@ See design docs for full details:
 
 ### Runtime Data Directory
 
-**Rule:** All V2 runtime artifacts live under `.llm247_v2/` (gitignored). Contents: `tasks.db`, `experience.db`, `directive.json`, `constitution.md`, `exploration_map.json`, `interest_profile.json`, `activity.log`, `activity.jsonl`, `llm_audit.jsonl`, `agent.log`.
+**Rule:** All V2 runtime artifacts live under `.llm247_v2/` (gitignored). Contents: `tasks.db`, `experience.db`, `models.db`, `directive.json`, `constitution.md`, `exploration_map.json`, `interest_profile.json`, `activity.log`, `activity.jsonl`, `llm_audit.jsonl`, `agent.log`.
 **Why:** Single, predictable location for all agent state. Easy to back up, inspect, or reset.
+
+### 2026-03-06 — Model Registry And Binding Points
+
+**Rule:** Dashboard-managed model registrations and runtime binding selections MUST live in `.llm247_v2/models.db`, and all LLM call sites MUST resolve models through named `ModelBindingPoint`s instead of hardcoding one shared model.
+**Why:** Different runtime stages now need independently configurable models, while unbound call sites should fall back to the latest registered default LLM instead of hidden env configuration.
+**See also:** `docs/plans/2026-03-06-model-registry-and-routing.md`
+
+### 2026-03-06 — Embedding Registrations Use API Paths
+
+**Rule:** `llm` model registrations store an OpenAI-compatible `base_url`, but `embedding` model registrations MUST store the full `api_path` for the embedding endpoint.
+**Why:** Ark embedding APIs are addressed by concrete paths such as `/api/v3/embeddings/multimodal`, not by the chat-completions root URL shape used by LLM models.
+**See also:** `docs/design/core.md`, `docs/design/dashboard.md`
 
 ### Constitution Immutability
 

@@ -27,8 +27,8 @@ from llm247_v2.discovery.interest import (
     discover_interest_driven,
     discover_web_search,
 )
-from llm247_v2.llm.client import LLMClient, extract_json
-from llm247_v2.core.models import Directive, Task, TaskSource, TaskStatus
+from llm247_v2.llm.client import LLMClient, client_for_point, extract_json
+from llm247_v2.core.models import Directive, ModelBindingPoint, Task, TaskSource, TaskStatus
 from llm247_v2.discovery.value import (
     TaskValue,
     assess_task_value_heuristic,
@@ -70,7 +70,18 @@ def discover_and_evaluate(
     log_parts.append(f"Strategy: {strategy.name} ({strategy.description})")
     logger.info("Discovery strategy: %s", strategy.name)
 
-    raw_tasks = _execute_strategy(workspace, directive, constitution, llm, strategy, emap, existing_titles, interest_profile)
+    discovery_llm = client_for_point(llm, ModelBindingPoint.DISCOVERY_GENERATION.value)
+    raw_tasks = _execute_strategy(
+        workspace,
+        directive,
+        constitution,
+        discovery_llm,
+        strategy,
+        emap,
+        existing_titles,
+        interest_profile,
+        llm_router=llm,
+    )
     log_parts.append(f"Raw candidates: {len(raw_tasks)}")
 
     if observer and raw_tasks:
@@ -96,7 +107,8 @@ def discover_and_evaluate(
 
     after_llm = len(pre_filtered)
     if len(pre_filtered) > 3:
-        llm_values = assess_tasks_with_llm(pre_filtered, constitution, directive, llm)
+        value_llm = client_for_point(llm, ModelBindingPoint.TASK_VALUE.value)
+        llm_values = assess_tasks_with_llm(pre_filtered, constitution, directive, value_llm)
 
         if observer:
             _emit_value_events(observer, pre_filtered, llm_values, stage="llm")
@@ -163,6 +175,7 @@ def _execute_strategy(
     emap: ExplorationMap,
     existing: set[str],
     interest_profile: Optional[InterestProfile] = None,
+    llm_router: Optional[LLMClient] = None,
 ) -> List[Task]:
     """Dispatch to the appropriate scanning function based on strategy."""
     name = strategy.name
@@ -199,11 +212,13 @@ def _execute_strategy(
 
     if name == "web_search":
         ip = interest_profile or build_interest_profile(directive)
-        return discover_web_search(workspace, directive, llm, ip, existing)
+        web_search_llm = client_for_point(llm_router or llm, ModelBindingPoint.WEB_SEARCH_DISCOVERY.value)
+        return discover_web_search(workspace, directive, web_search_llm, ip, existing)
 
     if name == "interest_driven":
         ip = interest_profile or build_interest_profile(directive)
-        return discover_interest_driven(workspace, llm, ip, existing)
+        interest_llm = client_for_point(llm_router or llm, ModelBindingPoint.INTEREST_DRIVEN_DISCOVERY.value)
+        return discover_interest_driven(workspace, interest_llm, ip, existing)
 
     logger.warning("Unknown strategy: %s, falling back to todo_sweep", name)
     return _scan_todos(workspace, existing)

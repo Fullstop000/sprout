@@ -37,6 +37,8 @@ The server runs in its own thread when launched with `--with-ui`. It shares the 
 | `/api/help-center` | — | All `needs_human` tasks |
 | `/api/experiences` | `limit`, `category`, `q` | Experience store contents |
 | `/api/directive` | — | Current directive as JSON |
+| `/api/models` | — | Registered models, binding metadata, and current selections |
+| `/api/bootstrap-status` | — | Startup readiness and setup requirements |
 | `/api/activity` | `limit`, `phase` | Recent activity events from `activity.jsonl` |
 | `/api/llm-audit` | `limit`, `seq_after` | Recent LLM calls (previews only, no full prompts) |
 | `/api/llm-audit/<seq>` | — | Single LLM call with full prompt + response |
@@ -46,6 +48,10 @@ The server runs in its own thread when launched with `--with-ui`. It shares the 
 | Endpoint | Body | Description |
 |----------|------|-------------|
 | `/api/directive` | `Directive` JSON | Replace directive entirely |
+| `/api/models` | `{model_type, base_url, api_path, model_name, api_key, desc}` | Register a reusable model |
+| `PUT /api/models/<id>` | `{model_type, base_url, api_path, model_name, api_key, desc}` | Update one registered model; blank `api_key` keeps the existing secret |
+| `DELETE /api/models/<id>` | — | Delete one registered model and clear bindings that pointed to it |
+| `/api/model-bindings` | `{bindings}` | Save runtime binding-point → model selection |
 | `/api/pause` | — | Set `directive.paused = true` |
 | `/api/resume` | — | Set `directive.paused = false` |
 | `/api/tasks/cancel` | `{task_id}` | Cancel a non-terminal task |
@@ -98,6 +104,10 @@ Agent re-runs verification (skips planning and execution)
 ## Frontend
 
 The frontend is a Vite/React build. Build artifacts live in `frontend/dist/`. The server reads `frontend/dist/index.html` and serves `frontend/dist/assets/` statically.
+
+When `/api/bootstrap-status` reports `requires_setup=true`, the frontend should
+guide the operator to the `Models` page and keep the initialization call-to-action
+visible until a default `llm` model has been registered.
 
 If `frontend/dist/` doesn't exist, the server falls back to a minimal HTML page with build instructions.
 

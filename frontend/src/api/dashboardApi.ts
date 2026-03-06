@@ -2,8 +2,10 @@ import type {
   CycleSummary,
   DashboardStats,
   DirectivePayload,
+  BootstrapStatusPayload,
   ExperienceEntry,
   LlmAuditEntry,
+  ModelRegistryPayload,
   TaskDetail,
   TaskEvent,
   TaskSummary,
@@ -120,6 +122,66 @@ export class DashboardApiClient {
   /** Fetch persisted experience memory entries for dashboard review. */
   getExperiences(limit = 100): Promise<{ updated_at: string; total: number; experiences: ExperienceEntry[] }> {
     return this.requestJson(`/api/experiences?limit=${limit}`)
+  }
+
+  /** Fetch model registry state and runtime binding metadata. */
+  getModels(): Promise<ModelRegistryPayload> {
+    return this.requestJson('/api/models')
+  }
+
+  /** Fetch startup readiness for setup flow. */
+  getBootstrapStatus(): Promise<BootstrapStatusPayload> {
+    return this.requestJson('/api/bootstrap-status')
+  }
+
+  /** Register one model for later runtime binding. */
+  registerModel(payload: {
+    model_type: 'llm' | 'embedding'
+    base_url: string
+    api_path: string
+    model_name: string
+    api_key: string
+    desc: string
+  }): Promise<{ status?: string; model?: Record<string, unknown>; error?: string }> {
+    return this.requestJson('/api/models', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+  }
+
+  /** Update one existing registered model. Blank api_key keeps the stored secret. */
+  updateModel(modelId: string, payload: {
+    model_type: 'llm' | 'embedding'
+    base_url: string
+    api_path: string
+    model_name: string
+    api_key: string
+    desc: string
+  }): Promise<{ status?: string; model?: Record<string, unknown>; error?: string }> {
+    return this.requestJson(`/api/models/${encodeURIComponent(modelId)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+  }
+
+  /** Delete one registered model and clear bindings that point at it. */
+  deleteModel(modelId: string): Promise<{ status?: string; model_id?: string; error?: string }> {
+    return this.requestJson(`/api/models/${encodeURIComponent(modelId)}`, {
+      method: 'DELETE',
+    })
+  }
+
+  /** Persist selected model ids for runtime binding points. */
+  saveModelBindings(payload: {
+    bindings: Record<string, string>
+  }): Promise<{ status?: string; bindings?: Record<string, { model_id: string; updated_at?: string }>; error?: string }> {
+    return this.requestJson('/api/model-bindings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
   }
 }
 

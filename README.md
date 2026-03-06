@@ -47,7 +47,9 @@ See [docs/design/](docs/design/) for full design documentation:
 
 ```bash
 cp .env.example .env
-# 编辑 .env，设置 ARK_API_KEY 和 ARK_MODEL
+# 可选：编辑 .env，设置 WORKSPACE_PATH / POLL_INTERVAL_SECONDS 等运行参数
+# 模型配置改为在 Dashboard 的 Models 页面注册和绑定
+# LLM 填 base URL；embedding 填完整 API path（例如 /api/v3/embeddings/multimodal）
 ```
 
 ### 运行
@@ -55,6 +57,9 @@ cp .env.example .env
 ```bash
 # 启动 24/7 agent 循环
 ./scripts/start_v2.sh agent
+
+# 如果还没注册默认 LLM，进程会自动进入 setup mode，
+# 启动 dashboard 并等待你在 Models 页面完成初始化
 
 # 仅启动 Dashboard UI
 ./scripts/start_v2.sh ui

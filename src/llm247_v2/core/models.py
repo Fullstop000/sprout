@@ -31,6 +31,25 @@ class TaskSource(str, Enum):
     INTEREST_DRIVEN = "interest_driven"
 
 
+class ModelType(str, Enum):
+    """Supported registered model families."""
+
+    EMBEDDING = "embedding"
+    LLM = "llm"
+
+
+class ModelBindingPoint(str, Enum):
+    """Named runtime call sites that can be bound to registered models."""
+
+    PLANNING = "planning"
+    TASK_VALUE = "task_value"
+    DISCOVERY_GENERATION = "discovery_generation"
+    INTEREST_DRIVEN_DISCOVERY = "interest_driven_discovery"
+    WEB_SEARCH_DISCOVERY = "web_search_discovery"
+    LEARNING_EXTRACTION = "learning_extraction"
+    EXPERIENCE_MERGE = "experience_merge"
+
+
 @dataclass
 class Task:
     """One unit of work tracked across discovery, execution, and human handoff."""
@@ -67,6 +86,40 @@ class ExecutionRound:
     verification: str
     trigger: str  # "step_failure" | "verification_failure"
     token_cost: int = 0
+
+
+@dataclass
+class RegisteredModel:
+    """One persisted model registration available to the dashboard and runtime."""
+
+    id: str
+    model_type: str
+    model_name: str
+    api_key: str
+    base_url: str = ""
+    api_path: str = ""
+    desc: str = ""
+    created_at: str = ""
+    updated_at: str = ""
+
+
+@dataclass
+class ModelBinding:
+    """Binds one runtime call site to a registered model id."""
+
+    binding_point: str
+    model_id: str
+    updated_at: str = ""
+
+
+@dataclass(frozen=True)
+class ModelBindingSpec:
+    """Static metadata describing one configurable runtime binding point."""
+
+    binding_point: str
+    label: str
+    description: str
+    model_type: str
 
 
 @dataclass

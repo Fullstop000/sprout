@@ -6,8 +6,34 @@ import os
 import signal
 import sys
 import threading
+import time
 from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
+
+
+def _resolve_bound_model(model_store, binding_point: str):
+    """Resolve one registered model for a binding point, or return None."""
+    binding = model_store.get_binding(binding_point)
+    if not binding:
+        return None
+    return model_store.get_model(binding.model_id)
+
+
+def _bootstrap_status(model_store) -> dict:
+    """Summarize whether runtime prerequisites are satisfied."""
+    ready = model_store.get_default_model() is not None
+    missing = [] if ready else ["default_llm"]
+    return {
+        "ready": ready,
+        "requires_setup": not ready,
+        "missing": missing,
+        "recommended_tab": "models",
+        "message": (
+            "Register at least one llm model in the Models page to finish initialization."
+            if not ready
+            else "Runtime prerequisites satisfied."
+        ),
+    }
 
 
 def _load_env() -> None:
@@ -64,20 +90,10 @@ def main() -> int:
     _load_env()
     args = parse_args()
 
-    api_key = os.getenv("ARK_API_KEY", "").strip()
-    if not api_key and not args.ui:
-        print("ERROR: ARK_API_KEY is required", file=sys.stderr)
-        return 1
-
-    base_url = os.getenv("ARK_BASE_URL", "https://ark-cn-beijing.bytedance.net/api/v3").strip()
-    model = os.getenv("ARK_MODEL", "").strip()
-    if not model and not args.ui:
-        print("ERROR: ARK_MODEL is required", file=sys.stderr)
-        return 1
-
     workspace = Path(args.workspace or os.getenv("WORKSPACE_PATH", os.getcwd())).resolve()
     state_dir = workspace / ".llm247_v2"
     db_path = state_dir / "tasks.db"
+    models_db_path = state_dir / "models.db"
     directive_path = state_dir / "directive.json"
     constitution_path = state_dir / "constitution.md"
     exploration_map_path = state_dir / "exploration_map.json"
@@ -91,7 +107,10 @@ def main() -> int:
     logger.info("Sprout Agent V2 starting workspace=%s", workspace)
 
     from llm247_v2.storage.store import TaskStore
+    from llm247_v2.storage.model_registry import ModelRegistryStore
     store = TaskStore(db_path)
+    model_store = ModelRegistryStore(models_db_path)
+    bootstrap = _bootstrap_status(model_store)
 
     if args.ui:
         from llm247_v2.dashboard.server import serve_dashboard
@@ -106,21 +125,83 @@ def main() -> int:
                 port=args.ui_port,
                 state_dir=state_dir,
                 experience_store=exp_store,
+                model_store=model_store,
+                bootstrap_status_provider=lambda: _bootstrap_status(model_store),
             )
             return 0
         finally:
             exp_store.close()
+            model_store.close()
             store.close()
 
-    from llm247_v2.llm.client import ArkLLMClient, BudgetExhaustedError, LLMAuditLogger
+    from llm247_v2.llm.client import ArkLLMClient, BudgetExhaustedError, LLMAuditLogger, RoutedLLMClient, TokenTracker
     from llm247_v2.agent import AutonomousAgentV2, GracefulShutdown, run_agent_loop
     from llm247_v2.storage.experience import ExperienceStore
     from llm247_v2.observability.observer import create_default_observer
+    from llm247_v2.dashboard.server import serve_dashboard
+
+    exp_store = ExperienceStore(state_dir / "experience.db")
+
+    if args.with_ui or bootstrap["requires_setup"]:
+        ui_thread = threading.Thread(
+            target=serve_dashboard,
+            args=(store, directive_path, args.ui_host, args.ui_port),
+            kwargs={
+                "state_dir": state_dir,
+                "experience_store": exp_store,
+                "model_store": model_store,
+                "bootstrap_status_provider": lambda: _bootstrap_status(model_store),
+            },
+            daemon=True,
+        )
+        ui_thread.start()
+        logger.info("Dashboard started on http://%s:%d", args.ui_host, args.ui_port)
+
+    if bootstrap["requires_setup"]:
+        logger.warning("Runtime prerequisites missing: %s", ", ".join(bootstrap["missing"]))
+        logger.warning("Entering setup mode. Open http://%s:%d and complete initialization.", args.ui_host, args.ui_port)
+        try:
+            while True:
+                bootstrap = _bootstrap_status(model_store)
+                if bootstrap["ready"]:
+                    logger.info("Initialization completed; resuming agent startup")
+                    break
+                time.sleep(1.0)
+        except KeyboardInterrupt:
+            exp_store.close()
+            model_store.close()
+            store.close()
+            return 32
+
+    default_registered_model = model_store.get_default_model()
+    if default_registered_model is None:
+        exp_store.close()
+        model_store.close()
+        store.close()
+        print("ERROR: initialization incomplete, no default llm registered", file=sys.stderr)
+        return 1
 
     audit_logger = LLMAuditLogger(state_dir / "llm_audit.jsonl")
-    llm = ArkLLMClient(api_key=api_key, base_url=base_url, model=model, audit_logger=audit_logger)
+    shared_tracker = TokenTracker()
+    default_llm = ArkLLMClient(
+        api_key=default_registered_model.api_key,
+        base_url=default_registered_model.base_url,
+        model=default_registered_model.model_name,
+        audit_logger=audit_logger,
+        tracker=shared_tracker,
+    )
+    llm = RoutedLLMClient(
+        default_client=default_llm,
+        binding_resolver=lambda binding_point: _resolve_bound_model(model_store, binding_point),
+        client_factory=lambda registered_model: ArkLLMClient(
+            api_key=registered_model.api_key,
+            base_url=registered_model.base_url,
+            model=registered_model.model_name,
+            audit_logger=audit_logger,
+            tracker=shared_tracker,
+        ),
+    )
     observer = create_default_observer(state_dir, store=store, console=True)
-    exp_store = ExperienceStore(state_dir / "experience.db")
     shutdown_event = threading.Event()
 
     agent = AutonomousAgentV2(
@@ -151,17 +232,6 @@ def main() -> int:
 
     signal.signal(signal.SIGTERM, _handle_signal)
     signal.signal(signal.SIGINT, _handle_signal)
-
-    if args.with_ui:
-        from llm247_v2.dashboard.server import serve_dashboard
-        ui_thread = threading.Thread(
-            target=serve_dashboard,
-            args=(store, directive_path, args.ui_host, args.ui_port),
-            kwargs={"state_dir": state_dir, "experience_store": exp_store},
-            daemon=True,
-        )
-        ui_thread.start()
-        logger.info("Dashboard started on http://%s:%d", args.ui_host, args.ui_port)
 
     try:
         if args.once:
@@ -202,6 +272,7 @@ def main() -> int:
         observer.close()
         exp_store.close()
         audit_logger.close()
+        model_store.close()
         store.close()
 
 
