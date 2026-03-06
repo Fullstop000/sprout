@@ -4,10 +4,14 @@ import json
 import logging
 import threading
 import time
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Protocol, Tuple
+from typing import Callable, Protocol, Tuple
+
+from llm247_v2.core.models import ModelType, RegisteredModel
 
 logger = logging.getLogger("llm247_v2.llm")
 
@@ -136,12 +140,13 @@ class ArkLLMClient:
         base_url: str,
         model: str,
         audit_logger: LLMAuditLogger | None = None,
+        tracker: TokenTracker | None = None,
     ) -> None:
         from openai import OpenAI
 
         self._client = OpenAI(api_key=api_key, base_url=base_url)
         self._model = model
-        self.tracker = TokenTracker()
+        self.tracker = tracker or TokenTracker()
         self._audit = audit_logger
 
     def generate(self, prompt: str) -> str:
@@ -192,9 +197,121 @@ class BudgetExhaustedError(Exception):
     """Raised when API budget/quota is exhausted."""
 
 
+def probe_registered_model_connection(
+    model: RegisteredModel,
+    *,
+    timeout_seconds: float = 5.0,
+) -> tuple[bool, str]:
+    """Probe one registered model endpoint and return connectivity status."""
+    endpoint = model.api_path if model.model_type == ModelType.EMBEDDING.value else _join_openai_path(model.base_url, "chat/completions")
+    payload = _build_probe_payload(model)
+    request = urllib.request.Request(
+        endpoint,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {model.api_key}",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+            status_code = getattr(response, "status", 200)
+            if 200 <= status_code < 300:
+                return True, "Connection OK"
+            return False, f"HTTP {status_code}"
+    except urllib.error.HTTPError as exc:
+        detail = _read_error_body(exc)
+        return False, f"HTTP {exc.code}: {detail}" if detail else f"HTTP {exc.code}"
+    except urllib.error.URLError as exc:
+        return False, f"Connection error: {exc.reason}"
+    except Exception as exc:
+        return False, f"Probe failed: {exc}"
+
+
+class RoutedLLMClient:
+    """Resolve per-point model bindings while preserving one default client."""
+
+    def __init__(
+        self,
+        default_client: LLMClient,
+        binding_resolver: Callable[[str], RegisteredModel | None],
+        client_factory: Callable[[RegisteredModel], LLMClient],
+    ) -> None:
+        self._default_client = default_client
+        self._binding_resolver = binding_resolver
+        self._client_factory = client_factory
+        self._clients: dict[str, LLMClient] = {}
+        self.tracker = getattr(default_client, "tracker", None)
+
+    def generate(self, prompt: str) -> str:
+        """Compatibility entry point that uses the default client."""
+        return self._default_client.generate(prompt)
+
+    def generate_tracked(self, prompt: str) -> Tuple[str, UsageInfo]:
+        """Compatibility entry point that uses the default client."""
+        return self._default_client.generate_tracked(prompt)
+
+    def for_point(self, binding_point: str) -> LLMClient:
+        """Return the client bound to one runtime point, or the default client."""
+        model = self._binding_resolver(binding_point)
+        if model is None:
+            return self._default_client
+        client = self._clients.get(model.id)
+        if client is None:
+            client = self._client_factory(model)
+            self._clients[model.id] = client
+        return client
+
+
+def client_for_point(client: LLMClient, binding_point: str) -> LLMClient:
+    """Resolve one binding point when the caller may have a router or a plain client."""
+    selector = getattr(client, "for_point", None)
+    if callable(selector):
+        return selector(binding_point)
+    return client
+
+
 def _is_budget_error(exc: Exception) -> bool:
     text = str(exc).lower()
     return any(kw in text for kw in ("quota", "budget", "rate_limit", "insufficient", "429"))
+
+
+def _join_openai_path(base_url: str, suffix: str) -> str:
+    """Join one OpenAI-compatible base URL with a relative endpoint path."""
+    return f"{str(base_url).rstrip('/')}/{suffix.lstrip('/')}"
+
+
+def _build_probe_payload(model: RegisteredModel) -> dict:
+    """Build the smallest safe API payload for one model family."""
+    if model.model_type == ModelType.EMBEDDING.value:
+        endpoint = model.api_path or ""
+        if "multimodal" in endpoint:
+            return {
+                "model": model.model_name,
+                "input": [{"type": "text", "text": "connection-check"}],
+            }
+        return {
+            "model": model.model_name,
+            "input": "connection-check",
+        }
+    return {
+        "model": model.model_name,
+        "messages": [{"role": "user", "content": "connection-check"}],
+        "temperature": 0,
+        "max_tokens": 1,
+    }
+
+
+def _read_error_body(exc: urllib.error.HTTPError) -> str:
+    """Extract one short error preview from a failed HTTP response."""
+    try:
+        body = exc.read().decode("utf-8", errors="replace").strip()
+    except Exception:
+        return ""
+    if not body:
+        return ""
+    return body[:160]
 
 
 def extract_json(text: str) -> dict | None:

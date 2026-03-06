@@ -7,10 +7,16 @@ import urllib.request
 from pathlib import Path
 
 from llm247_v2.dashboard.server import (
+    _api_bootstrap_status,
+    _api_delete_model,
     _api_experiences,
     _api_help_center,
     _api_inject_task,
+    _api_models,
+    _api_register_model,
+    _api_update_model,
     _api_resolve_help_request,
+    _api_set_model_bindings,
     _api_set_paused,
     _api_stats,
     _api_task_detail,
@@ -20,7 +26,8 @@ from llm247_v2.dashboard.server import (
     serve_dashboard,
 )
 from llm247_v2.core.directive import load_directive, save_directive
-from llm247_v2.core.models import Directive, Task, TaskStatus
+from llm247_v2.core.models import Directive, ModelBindingPoint, ModelType, Task, TaskStatus
+from llm247_v2.storage.model_registry import ModelRegistryStore
 from llm247_v2.storage.store import TaskStore
 from llm247_v2.storage.experience import Experience, ExperienceStore
 
@@ -31,12 +38,14 @@ class TestDashboardAPI(unittest.TestCase):
         self.db_path = Path(self.tmp.name) / "test.db"
         self.store = TaskStore(self.db_path)
         self.exp_store = ExperienceStore(Path(self.tmp.name) / "experience.db")
+        self.model_store = ModelRegistryStore(Path(self.tmp.name) / "models.db")
         self.directive_path = Path(self.tmp.name) / "directive.json"
         save_directive(self.directive_path, Directive())
 
     def tearDown(self):
         self.store.close()
         self.exp_store.close()
+        self.model_store.close()
         self.tmp.cleanup()
 
     def test_api_tasks_empty(self):
@@ -136,6 +145,149 @@ class TestDashboardAPI(unittest.TestCase):
         self.assertEqual(result["total"], 1)
         self.assertEqual(result["experiences"][0]["id"], "exp1")
         self.assertEqual(result["experiences"][0]["category"], "insight")
+
+    def test_register_model_api_persists_model(self):
+        payload = _api_register_model(
+            self.model_store,
+            {
+                "model_type": ModelType.LLM.value,
+                "base_url": "https://example.com/v1",
+                "model_name": "planner-model",
+                "api_key": "secret-ak",
+                "desc": "Primary planner model",
+            },
+        )
+
+        self.assertEqual(payload["status"], "ok")
+        self.assertEqual(payload["model"]["model_name"], "planner-model")
+        self.assertEqual(payload["model"]["api_key_preview"], "se***ak")
+        self.assertEqual(payload["model"]["desc"], "Primary planner model")
+
+    def test_register_embedding_model_api_persists_api_path(self):
+        payload = _api_register_model(
+            self.model_store,
+            {
+                "model_type": ModelType.EMBEDDING.value,
+                "api_path": "https://ark.example.com/api/v3/embeddings/multimodal",
+                "model_name": "embed-model",
+                "api_key": "embed-ak",
+                "desc": "Multimodal embedding endpoint",
+            },
+        )
+
+        self.assertEqual(payload["status"], "ok")
+        self.assertEqual(payload["model"]["model_type"], ModelType.EMBEDDING.value)
+        self.assertEqual(
+            payload["model"]["api_path"],
+            "https://ark.example.com/api/v3/embeddings/multimodal",
+        )
+        self.assertEqual(payload["model"]["base_url"], "")
+
+    def test_bootstrap_status_requires_setup_without_default_llm(self):
+        payload = _api_bootstrap_status(self.model_store)
+
+        self.assertFalse(payload["ready"])
+        self.assertTrue(payload["requires_setup"])
+        self.assertIn("default_llm", payload["missing"])
+
+    def test_models_api_returns_models_and_binding_points(self):
+        model = self.model_store.register_model(
+            model_type=ModelType.LLM.value,
+            base_url="https://example.com/v1",
+            model_name="planner-model",
+            api_key="secret-ak",
+            desc="Primary planner model",
+        )
+        self.model_store.set_binding(ModelBindingPoint.PLANNING.value, model.id)
+
+        payload = _api_models(self.model_store)
+
+        self.assertEqual(len(payload["models"]), 1)
+        self.assertEqual(payload["bindings"][ModelBindingPoint.PLANNING.value]["model_id"], model.id)
+        self.assertTrue(any(item["binding_point"] == ModelBindingPoint.PLANNING.value for item in payload["binding_points"]))
+
+    def test_models_api_includes_connection_status(self):
+        self.model_store.register_model(
+            model_type=ModelType.LLM.value,
+            base_url="https://example.com/v1",
+            model_name="planner-model",
+            api_key="secret-ak",
+            desc="Primary planner model",
+        )
+
+        payload = _api_models(
+            self.model_store,
+            connection_status_provider=lambda _model: {
+                "connection_status": "success",
+                "connection_message": "Connection OK",
+                "connection_checked_at": "2026-03-06T00:00:00+00:00",
+            },
+        )
+
+        self.assertEqual(payload["models"][0]["connection_status"], "success")
+        self.assertEqual(payload["models"][0]["connection_message"], "Connection OK")
+
+    def test_set_model_bindings_api_updates_binding(self):
+        model = self.model_store.register_model(
+            model_type=ModelType.LLM.value,
+            base_url="https://example.com/v1",
+            model_name="planner-model",
+            api_key="secret-ak",
+            desc="Primary planner model",
+        )
+
+        payload = _api_set_model_bindings(
+            self.model_store,
+            {"bindings": {ModelBindingPoint.PLANNING.value: model.id}},
+        )
+
+        self.assertEqual(payload["status"], "ok")
+        self.assertEqual(payload["bindings"][ModelBindingPoint.PLANNING.value]["model_id"], model.id)
+
+    def test_update_model_api_updates_existing_model(self):
+        model = self.model_store.register_model(
+            model_type=ModelType.LLM.value,
+            base_url="https://example.com/v1",
+            model_name="planner-model",
+            api_key="secret-ak",
+            desc="Primary planner model",
+        )
+
+        payload = _api_update_model(
+            self.model_store,
+            model.id,
+            {
+                "model_type": ModelType.LLM.value,
+                "base_url": "https://example.com/v2",
+                "model_name": "planner-model-v2",
+                "api_key": "",
+                "desc": "Updated planner model",
+            },
+        )
+
+        self.assertEqual(payload["status"], "ok")
+        self.assertEqual(payload["model"]["id"], model.id)
+        self.assertEqual(payload["model"]["base_url"], "https://example.com/v2")
+        self.assertEqual(payload["model"]["model_name"], "planner-model-v2")
+        self.assertEqual(payload["model"]["desc"], "Updated planner model")
+        self.assertEqual(payload["model"]["api_key_preview"], "se***ak")
+
+    def test_delete_model_api_removes_model_and_bindings(self):
+        model = self.model_store.register_model(
+            model_type=ModelType.LLM.value,
+            base_url="https://example.com/v1",
+            model_name="planner-model",
+            api_key="secret-ak",
+            desc="Primary planner model",
+        )
+        self.model_store.set_binding(ModelBindingPoint.PLANNING.value, model.id)
+
+        payload = _api_delete_model(self.model_store, model.id)
+
+        self.assertEqual(payload["status"], "ok")
+        self.assertEqual(payload["model_id"], model.id)
+        self.assertIsNone(self.model_store.get_model(model.id))
+        self.assertIsNone(self.model_store.get_binding(ModelBindingPoint.PLANNING.value))
 
 
 class TestPauseResumeAPI(unittest.TestCase):

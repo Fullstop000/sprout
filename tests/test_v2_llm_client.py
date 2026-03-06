@@ -1,9 +1,18 @@
 import json
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
-from llm247_v2.llm.client import LLMAuditLogger, TokenTracker, UsageInfo, extract_json
+from llm247_v2.core.models import ModelBindingPoint, ModelType, RegisteredModel
+from llm247_v2.llm.client import (
+    LLMAuditLogger,
+    RoutedLLMClient,
+    TokenTracker,
+    UsageInfo,
+    extract_json,
+    probe_registered_model_connection,
+)
 
 
 class TestUsageInfo(unittest.TestCase):
@@ -133,6 +142,98 @@ class TestLLMAuditLogger(unittest.TestCase):
         logger.record("p", "r", UsageInfo(), 10)
         logger.close()
         self.assertTrue(deep_path.exists())
+
+
+class FakePointLLM:
+    def __init__(self, response: str):
+        self.response = response
+        self.prompts: list[str] = []
+
+    def generate(self, prompt: str) -> str:
+        self.prompts.append(prompt)
+        return self.response
+
+
+class TestRoutedLLMClient(unittest.TestCase):
+    def test_bound_point_uses_registered_model_client(self):
+        default_client = FakePointLLM("default")
+        bound_client = FakePointLLM("bound")
+        routed = RoutedLLMClient(
+            default_client=default_client,
+            binding_resolver=lambda point: RegisteredModel(
+                id="m1",
+                model_type="llm",
+                base_url="https://example.com/v1",
+                model_name="planner-model",
+                api_key="secret-ak",
+            ) if point == ModelBindingPoint.PLANNING.value else None,
+            client_factory=lambda model: bound_client,
+        )
+
+        result = routed.for_point(ModelBindingPoint.PLANNING.value).generate("plan this")
+
+        self.assertEqual(result, "bound")
+        self.assertEqual(bound_client.prompts, ["plan this"])
+        self.assertEqual(default_client.prompts, [])
+
+    def test_unbound_point_falls_back_to_default_client(self):
+        default_client = FakePointLLM("default")
+        routed = RoutedLLMClient(
+            default_client=default_client,
+            binding_resolver=lambda point: None,
+            client_factory=lambda model: FakePointLLM("unused"),
+        )
+
+        result = routed.for_point(ModelBindingPoint.TASK_VALUE.value).generate("score this")
+
+        self.assertEqual(result, "default")
+        self.assertEqual(default_client.prompts, ["score this"])
+
+
+class TestProbeRegisteredModelConnection(unittest.TestCase):
+    @patch("llm247_v2.llm.client.urllib.request.urlopen")
+    def test_llm_probe_uses_chat_completion_path(self, mock_urlopen):
+        response = mock_urlopen.return_value.__enter__.return_value
+        response.status = 200
+        model = RegisteredModel(
+            id="m1",
+            model_type=ModelType.LLM.value,
+            base_url="https://example.com/v1",
+            model_name="planner-model",
+            api_key="secret-ak",
+        )
+
+        ok, message = probe_registered_model_connection(model)
+
+        self.assertTrue(ok)
+        self.assertEqual(message, "Connection OK")
+        request = mock_urlopen.call_args.args[0]
+        self.assertEqual(request.full_url, "https://example.com/v1/chat/completions")
+        payload = json.loads(request.data.decode("utf-8"))
+        self.assertEqual(payload["model"], "planner-model")
+        self.assertEqual(payload["max_tokens"], 1)
+
+    @patch("llm247_v2.llm.client.urllib.request.urlopen")
+    def test_embedding_probe_uses_multimodal_text_input(self, mock_urlopen):
+        response = mock_urlopen.return_value.__enter__.return_value
+        response.status = 200
+        model = RegisteredModel(
+            id="m2",
+            model_type=ModelType.EMBEDDING.value,
+            base_url="",
+            api_path="https://example.com/api/v3/embeddings/multimodal",
+            model_name="embed-model",
+            api_key="secret-ak",
+        )
+
+        ok, _message = probe_registered_model_connection(model)
+
+        self.assertTrue(ok)
+        request = mock_urlopen.call_args.args[0]
+        self.assertEqual(request.full_url, "https://example.com/api/v3/embeddings/multimodal")
+        payload = json.loads(request.data.decode("utf-8"))
+        self.assertEqual(payload["model"], "embed-model")
+        self.assertEqual(payload["input"][0]["type"], "text")
 
 
 if __name__ == "__main__":

@@ -94,3 +94,49 @@ export interface ExperienceEntry {
   applied_count?: number
   source_outcome?: string
 }
+
+/** Registered model row returned by dashboard model APIs. */
+export interface RegisteredModelEntry {
+  id: string
+  model_type: 'llm' | 'embedding'
+  base_url: string
+  api_path: string
+  model_name: string
+  api_key_preview: string
+  desc: string
+  connection_status?: 'success' | 'fail'
+  connection_message?: string
+  connection_checked_at?: string
+  created_at?: string
+  updated_at?: string
+}
+
+/** One configurable runtime binding point shown in the dashboard. */
+export interface ModelBindingPointEntry {
+  binding_point: string
+  label: string
+  description: string
+  model_type: 'llm' | 'embedding'
+}
+
+/** Saved model selection for one binding point. */
+export interface ModelBindingEntry {
+  model_id: string
+  updated_at?: string
+}
+
+/** Full payload for dashboard model registry screen. */
+export interface ModelRegistryPayload {
+  models: RegisteredModelEntry[]
+  bindings: Record<string, ModelBindingEntry>
+  binding_points: ModelBindingPointEntry[]
+}
+
+/** Startup readiness payload used by setup flow. */
+export interface BootstrapStatusPayload {
+  ready: boolean
+  requires_setup: boolean
+  missing: string[]
+  recommended_tab: string
+  message: string
+}

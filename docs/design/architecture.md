@@ -33,6 +33,7 @@ src/llm247_v2/
 │   ├── __init__.py
 │   ├── store.py             # Tasks/events/cycles
 │   └── experience.py        # Long-term memory and learning extraction
+│   └── model_registry.py    # Registered models + runtime binding points
 │
 ├── observability/           # Event observation layer
 │   ├── __init__.py

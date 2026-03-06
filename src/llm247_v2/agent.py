@@ -26,8 +26,8 @@ from llm247_v2.discovery.interest import (
     load_interest_profile,
     save_interest_profile,
 )
-from llm247_v2.llm.client import BudgetExhaustedError, LLMClient, TokenTracker, extract_json
-from llm247_v2.core.models import Directive, TaskStatus
+from llm247_v2.llm.client import BudgetExhaustedError, LLMClient, TokenTracker, client_for_point, extract_json
+from llm247_v2.core.models import Directive, ModelBindingPoint, TaskStatus
 from llm247_v2.observability.observer import NullObserver, Observer
 from llm247_v2.execution.planner import (
     format_execution_history_for_replan,
@@ -362,7 +362,11 @@ class AutonomousAgentV2:
                 self.obs.plan_started(task.id, task.title)
 
                 plan = plan_task_with_constitution(
-                    task, self.workspace, directive, constitution, self.llm,
+                    task,
+                    self.workspace,
+                    directive,
+                    constitution,
+                    client_for_point(self.llm, ModelBindingPoint.PLANNING.value),
                     experience_context=experience_context,
                 )
                 task.plan = serialize_plan(plan)
@@ -372,7 +376,11 @@ class AutonomousAgentV2:
                 executed_steps_text = format_execution_history_for_replan(results)
                 remaining = max_rounds - round_num
                 plan = replan_task_with_constitution(
-                    task, self.workspace, directive, constitution, self.llm,
+                    task,
+                    self.workspace,
+                    directive,
+                    constitution,
+                    client_for_point(self.llm, ModelBindingPoint.PLANNING.value),
                     executed_steps=executed_steps_text,
                     verification_output=verification_output,
                     trigger=trigger,
@@ -689,7 +697,7 @@ class AutonomousAgentV2:
                 verification_result=task.verification_result,
                 error_message=task.error_message,
                 outcome=outcome,
-                llm_generate=self.llm.generate,
+                llm_generate=client_for_point(self.llm, ModelBindingPoint.LEARNING_EXTRACTION.value).generate,
                 extract_json_fn=extract_json,
             )
             if learnings:
@@ -729,7 +737,7 @@ class AutonomousAgentV2:
             return
         try:
             merged = self.exp_store.consolidate(
-                llm_generate=self.llm.generate,
+                llm_generate=client_for_point(self.llm, ModelBindingPoint.EXPERIENCE_MERGE.value).generate,
                 extract_json_fn=extract_json,
             )
             if merged:

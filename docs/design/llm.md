@@ -9,6 +9,7 @@
 The `llm` package is the agent's only interface to language models. It provides:
 - A **protocol** (`LLMClient`) that all LLM backends implement
 - A concrete **adapter** (`ArkLLMClient`) for the ByteDance ARK / OpenAI-compatible API
+- A **routing layer** (`RoutedLLMClient`) for binding runtime call sites to registered models
 - **Token tracking** (`TokenTracker`) for per-task cost measurement
 - **Audit logging** (`LLMAuditLogger`) for full prompt/response traceability
 - **Prompt template management** (`prompts/`) for centralized prompt authoring
@@ -29,7 +30,8 @@ All agent code depends only on this interface. `ArkLLMClient` is the production 
 
 ### `ArkLLMClient`
 
-Wraps the OpenAI SDK pointed at the ARK endpoint (`ARK_BASE_URL`, `ARK_MODEL` env vars).
+Wraps an OpenAI-compatible endpoint using configuration loaded from a registered model
+record in `models.db`.
 
 Every call goes through `generate_tracked()`:
 1. Calls `chat.completions.create` with `temperature=0.7`, single user message
@@ -39,6 +41,19 @@ Every call goes through `generate_tracked()`:
 5. Detects budget exhaustion errors → raises `BudgetExhaustedError`
 
 `generate()` is a thin wrapper that calls `generate_tracked()` and discards usage info.
+
+### `RoutedLLMClient`
+
+Wraps one default `LLMClient` and resolves optional binding-point-specific models
+from `models.db`.
+
+- `for_point(binding_point)` returns the client bound to that point
+- unbound points fall back to the default registered `llm` model
+- bound clients are cached by registered model id
+- all clients share the same `TokenTracker` and `LLMAuditLogger`
+
+If no default registered `llm` exists at startup, the runtime enters setup mode
+and waits for dashboard-driven initialization instead of immediately crashing.
 
 ### `BudgetExhaustedError`
 
@@ -117,6 +132,6 @@ Templates are loaded once and cached via `@lru_cache`. Call `prompts.reload()` t
 
 ## Design Constraints
 
-- **Single model per session** — `ArkLLMClient` is instantiated once in `__main__.py` and injected everywhere. No ad-hoc client creation in business code.
+- **Named routing points, not ad-hoc models** — business code must resolve LLMs through explicit runtime binding points (`planning`, `task_value`, etc.), not instantiate clients inline.
 - **No streaming** — the agent uses blocking `generate()` calls. Streaming would complicate audit logging and add no benefit for the current use case.
 - **Temperature is fixed at 0.7** — not configurable per-call. If different tasks need different temperatures, this is a future concern.

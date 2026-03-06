@@ -186,6 +186,19 @@ h1, h2, h3 { margin: 0; color: var(--ink-heading); font-weight: 600; }
   font-variant-numeric: tabular-nums;
 }
 
+.setup-card {
+  border-color: rgba(210, 153, 34, 0.32);
+  background: linear-gradient(180deg, rgba(210, 153, 34, 0.14), rgba(210, 153, 34, 0.05));
+}
+
+.setup-copy {
+  display: block;
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--ink-muted);
+}
+
 /* ── Tab Bar ────────────────────────────────── */
 
 .tabbar {
@@ -235,6 +248,40 @@ h1, h2, h3 { margin: 0; color: var(--ink-heading); font-weight: 600; }
 
 .panel-padded {
   padding: 20px;
+}
+
+.stack-layout {
+  display: grid;
+  gap: 16px;
+}
+
+.panel-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.section-kicker {
+  margin: 0 0 6px;
+  font-size: 11px;
+  letter-spacing: 1.4px;
+  text-transform: uppercase;
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.panel-title {
+  font-size: 18px;
+  color: var(--ink-heading);
+}
+
+.panel-subtitle {
+  margin: 6px 0 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--ink-muted);
 }
 
 /* ── Table ──────────────────────────────────── */
@@ -291,6 +338,65 @@ td small {
 td strong {
   color: var(--ink-heading);
   font-weight: 500;
+}
+
+.model-desc {
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--ink-muted);
+  white-space: normal;
+}
+
+.model-connection {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  font-size: 11px;
+}
+
+.connection-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  flex-shrink: 0;
+}
+
+.connection-dot.connection-success {
+  background: var(--ok);
+  box-shadow: 0 0 8px rgba(63, 185, 80, 0.45);
+}
+
+.connection-dot.connection-fail {
+  background: var(--danger);
+  box-shadow: 0 0 8px rgba(248, 81, 73, 0.35);
+}
+
+.connection-label {
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.connection-label.connection-success {
+  color: var(--ok);
+}
+
+.connection-label.connection-fail {
+  color: var(--danger);
+}
+
+.connection-meta,
+.connection-message {
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--ink-faint);
+}
+
+.connection-message {
+  margin-top: 4px;
+  white-space: normal;
 }
 
 .numeric {
@@ -859,10 +965,95 @@ form label {
   color: var(--ink-muted);
 }
 
+.field-hint {
+  display: block;
+  margin-top: 6px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--ink-faint);
+  font-weight: 400;
+}
+
 .field-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 14px;
+}
+
+.form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.row-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.table-action {
+  min-width: 72px;
+  padding: 6px 12px;
+  font-size: 12px;
+}
+
+.table-action-danger {
+  color: var(--danger);
+  background: var(--danger-muted);
+  border-color: rgba(248, 81, 73, 0.25);
+}
+
+.table-action-danger:hover {
+  background: rgba(248, 81, 73, 0.25);
+}
+
+.secondary-btn {
+  color: var(--ink-muted);
+  background: rgba(139, 148, 158, 0.08);
+  border-color: rgba(139, 148, 158, 0.2);
+}
+
+.secondary-btn:hover {
+  color: var(--ink);
+  background: rgba(139, 148, 158, 0.16);
+}
+
+.binding-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 14px;
+}
+
+.binding-card {
+  margin: 0;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: linear-gradient(180deg, rgba(88, 166, 255, 0.05), rgba(139, 148, 158, 0.03));
+}
+
+.binding-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.binding-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--ink-heading);
+}
+
+.binding-description {
+  display: block;
+  margin-bottom: 10px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--ink-muted);
 }
 
 input, textarea, select {
@@ -908,6 +1099,11 @@ button {
 
 button:hover {
   background: rgba(88, 166, 255, 0.25);
+}
+
+button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 /* ── Toast ──────────────────────────────────── */

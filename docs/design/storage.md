@@ -10,6 +10,7 @@ The `storage` package handles all SQLite persistence. It is split into two store
 
 - **`TaskStore`** (`store.py`, `tasks.db`) — tasks, events, and cycle history. The operational database.
 - **`ExperienceStore`** (`experience.py`, `experience.db`) — long-term learnings. See [experience.md](experience.md) for full design.
+- **`ModelRegistryStore`** (`model_registry.py`, `models.db`) — dashboard-registered models and runtime binding selections.
 
 Separating the databases lets each be independently backed up, inspected, or reset without affecting the other.
 
@@ -115,4 +116,4 @@ Current migrations:
 - **Single connection per store** — both `TaskStore` and `ExperienceStore` open one persistent connection, protected by a `threading.Lock`. No connection pooling needed at this scale.
 - **WAL mode always on** — ensures the dashboard HTTP thread can read while the agent writes, without blocking.
 - **No ORM** — raw SQL with `sqlite3.Row`. Keeps the dependency footprint minimal and queries explicit.
-- **Separate databases** — `tasks.db` and `experience.db` are in the same `.llm247_v2/` directory but are independent SQLite files. This allows resetting experience without affecting task history, and vice versa.
+- **Separate databases** — `tasks.db`, `experience.db`, and `models.db` are in the same `.llm247_v2/` directory but are independent SQLite files. This allows resetting one state domain without affecting the others.

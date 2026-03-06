@@ -76,6 +76,21 @@ DISCOVERED → QUEUED → PLANNING → EXECUTING → VERIFYING → COMPLETED
 
 **`CycleReport`** — summary of one agent cycle: discovered/executed/completed/failed counts, status, timing.
 
+**`RegisteredModel`** — one dashboard-managed model registration persisted in `models.db`.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | str | sha256-derived 12-char identifier |
+| `model_type` | str | `llm` or `embedding` |
+| `base_url` | str | OpenAI-compatible endpoint root for `llm` registrations |
+| `api_path` | str | Full embedding endpoint path for `embedding` registrations |
+| `model_name` | str | Remote model identifier |
+| `api_key` | str | Secret used at runtime |
+
+**`ModelBindingPoint`** — named runtime call sites that can be configured independently:
+`planning`, `task_value`, `discovery_generation`, `interest_driven_discovery`,
+`web_search_discovery`, `learning_extraction`, `experience_merge`
+
 ## Constitution (`constitution.py`)
 
 ### Purpose
