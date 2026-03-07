@@ -55,7 +55,7 @@ class TestGitHubClientE2E(unittest.TestCase):
 
     def test_list_open_issues_returns_e2e_issue(self):
         issue = self._create_issue("[E2E] List Open Issues")
-        time.sleep(1)  # let GitHub index the new issue
+        time.sleep(3)  # let GitHub index the new issue
         issues = self.client.list_open_issues()
         numbers = [i["number"] for i in issues]
         self.assertIn(issue["number"], numbers)
@@ -119,7 +119,7 @@ class TestSyncRoundTripE2E(unittest.TestCase):
 
         issue = self.client.create_issue("[E2E] Sync Round-Trip", "Test body for sync")
         self._opened_issues.append(issue["number"])
-        time.sleep(1)
+        time.sleep(3)
 
         result = sync_github_issues(self.client, self.thread_store, self.task_store)
         new_numbers = [t.github_issue_number for t in result.new_threads]
