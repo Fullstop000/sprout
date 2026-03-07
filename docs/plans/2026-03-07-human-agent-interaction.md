@@ -1,9 +1,9 @@
 # Plan: Human-Agent Interaction via GitHub Issues
 
-> Status: Approved
+> Status: In Progress
 > Created: 2026-03-07
 > Completed:
-> PR:
+> PR: https://github.com/Fullstop000/sprout/pull/14
 > Proposal: [docs/proposals/2026-03-07-human-agent-interaction.md](../proposals/2026-03-07-human-agent-interaction.md)
 
 ## Goal
