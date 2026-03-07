@@ -938,12 +938,12 @@ function DashboardRoot() {
           <Card>
             <CardHeader className="pb-3">
               <div className="flex items-center gap-3 flex-wrap">
-                <Select value={activityPhase} onValueChange={setActivityPhase}>
+                <Select value={activityPhase || '__all__'} onValueChange={(v) => setActivityPhase(v === '__all__' ? '' : v)}>
                   <SelectTrigger className="w-[140px]">
                     <SelectValue placeholder="All phases" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="">All phases</SelectItem>
+                    <SelectItem value="__all__">All phases</SelectItem>
                     <SelectItem value="cycle">cycle</SelectItem>
                     <SelectItem value="discover">discover</SelectItem>
                     <SelectItem value="value">value</SelectItem>
@@ -1322,16 +1322,17 @@ function DashboardRoot() {
                           </div>
                           <p className="text-xs text-muted-foreground mb-3">{bindingPoint.description}</p>
                           <Select
-                            value={modelBindings[bindingPoint.binding_point] ?? ''}
+                            value={modelBindings[bindingPoint.binding_point] || '__default__'}
                             onValueChange={(nextModelId) => {
-                              setModelBindings((current) => ({ ...current, [bindingPoint.binding_point]: nextModelId }))
+                              const value = nextModelId === '__default__' ? '' : nextModelId
+                              setModelBindings((current) => ({ ...current, [bindingPoint.binding_point]: value }))
                             }}
                           >
                             <SelectTrigger>
                               <SelectValue placeholder="Use default registered LLM" />
                             </SelectTrigger>
                             <SelectContent>
-                              <SelectItem value="">Use default registered LLM</SelectItem>
+                              <SelectItem value="__default__">Use default registered LLM</SelectItem>
                               {availableModels.map((model) => (
                                 <SelectItem key={model.id} value={model.id}>
                                   {model.model_name} · {model.api_key_preview}
