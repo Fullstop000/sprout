@@ -1,10 +1,10 @@
 # Proposal: Issue + Chat Interaction Model for Human-Agent Collaboration
 
-> Status: Draft
+> Status: Approved for Plan
 > Created: 2026-03-07
-> Decision: Should we replace the single-field `human_help_request` handoff with a structured issue + threaded chat model?
+> Decision: Approved — GitHub Issues as primary surface, internal DB as mirror; Shape A + B in first deliverable
 > Scope: Human-agent interaction layer — affects Task state machine, dashboard, and agent cycle
-> Next Step: Decide whether this is worth a plan; if yes, define the first deliverable slice
+> Next Step: Implementation plan at [../plans/2026-03-07-human-agent-interaction.md](../plans/2026-03-07-human-agent-interaction.md)
 > Related: [../design/execution.md](../design/execution.md), [../design/observability.md](../design/observability.md), [../design/dashboard.md](../design/dashboard.md)
 
 ## Summary
