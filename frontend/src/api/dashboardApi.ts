@@ -233,6 +233,15 @@ export class DashboardApiClient {
       body: JSON.stringify({ reason }),
     })
   }
+
+  /** Bulk-close a list of threads. */
+  bulkCloseThreads(threadIds: string[]): Promise<{ closed?: number; error?: string }> {
+    return this.requestJson('/api/threads/bulk-close', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ thread_ids: threadIds }),
+    })
+  }
 }
 
 /** Singleton client used by dashboard UI screens. */

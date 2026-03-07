@@ -215,6 +215,23 @@ function App() {
     }
   }
 
+  const bulkCloseThreads = async (threadIds: string[]): Promise<void> => {
+    try {
+      const payload = await dashboardApiClient.bulkCloseThreads(threadIds)
+      if (payload.error) {
+        showToast(payload.error, false)
+        return
+      }
+      showToast(`Closed ${payload.closed ?? threadIds.length} threads`)
+      await refreshThreads()
+      if (threadDetail && threadIds.includes(threadDetail.thread.id)) {
+        await openThreadDetail(threadDetail.thread.id)
+      }
+    } catch (error) {
+      showToast(`Bulk close failed: ${String(error)}`, false)
+    }
+  }
+
   const closeThread = async (threadId: string, reason: string): Promise<void> => {
     try {
       const payload = await dashboardApiClient.closeThread(threadId, reason)
@@ -573,6 +590,7 @@ function App() {
         onReply={(id, body) => replyToThread(id, body)}
         onCreateThread={(title, desc) => createThread(title, desc)}
         onCloseThread={(id, reason) => closeThread(id, reason)}
+        onBulkClose={(ids) => bulkCloseThreads(ids)}
         onRefresh={() => void refreshThreads()}
         replying={Boolean(replyingThreadId)}
         creating={creatingThread}
