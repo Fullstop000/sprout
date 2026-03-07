@@ -64,6 +64,7 @@ _MIGRATIONS = [
     # Legacy columns kept for backward compat with existing databases
     "ALTER TABLE tasks ADD COLUMN replan_history TEXT DEFAULT ''",
     "ALTER TABLE tasks ADD COLUMN execution_trace TEXT DEFAULT ''",
+    "ALTER TABLE tasks ADD COLUMN github_issue_url TEXT DEFAULT ''",
 ]
 
 
@@ -92,6 +93,7 @@ def _row_to_task(row: sqlite3.Row) -> Task:
         time_cost_seconds=d.get("time_cost_seconds", 0.0) or 0.0,
         whats_learned=d.get("whats_learned", "") or "",
         human_help_request=d.get("human_help_request", "") or "",
+        github_issue_url=d.get("github_issue_url", "") or "",
     )
 
 
@@ -125,8 +127,9 @@ class TaskStore:
                    (id, title, description, source, status, priority,
                     created_at, updated_at, branch_name, pr_url, execution_trace,
                     execution_log, error_message, cycle_id,
-                    token_cost, time_cost_seconds, whats_learned, human_help_request)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    token_cost, time_cost_seconds, whats_learned, human_help_request,
+                    github_issue_url)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     task.id, task.title, task.description, task.source,
                     task.status, task.priority,
@@ -134,7 +137,7 @@ class TaskStore:
                     task.branch_name, task.pr_url, task.execution_trace,
                     task.execution_log, task.error_message, task.cycle_id,
                     task.token_cost, task.time_cost_seconds, task.whats_learned,
-                    task.human_help_request,
+                    task.human_help_request, task.github_issue_url,
                 ),
             )
             self._conn.commit()
@@ -147,7 +150,8 @@ class TaskStore:
                    title=?, description=?, source=?, status=?, priority=?,
                    updated_at=?, branch_name=?, pr_url=?, execution_trace=?,
                    execution_log=?, error_message=?, cycle_id=?,
-                   token_cost=?, time_cost_seconds=?, whats_learned=?, human_help_request=?
+                   token_cost=?, time_cost_seconds=?, whats_learned=?,
+                   human_help_request=?, github_issue_url=?
                    WHERE id=?""",
                 (
                     task.title, task.description, task.source, task.status,
@@ -155,7 +159,7 @@ class TaskStore:
                     task.execution_trace, task.execution_log,
                     task.error_message, task.cycle_id,
                     task.token_cost, task.time_cost_seconds, task.whats_learned,
-                    task.human_help_request, task.id,
+                    task.human_help_request, task.github_issue_url, task.id,
                 ),
             )
             self._conn.commit()

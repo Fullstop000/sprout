@@ -72,6 +72,7 @@ def serve_dashboard(
     experience_store: Optional[ExperienceStore] = None,
     model_store: Optional[ModelRegistryStore] = None,
     bootstrap_status_provider: Optional[Callable[[], dict]] = None,
+    thread_store=None,
 ) -> None:
     """Start HTTP control plane server."""
     _state_dir = state_dir or directive_path.parent
@@ -88,7 +89,7 @@ def serve_dashboard(
                 self._serve_json(_api_tasks(store))
             elif path.startswith("/api/tasks/"):
                 task_id = path.split("/api/tasks/")[1].split("?")[0]
-                self._serve_json(_api_task_detail(store, task_id))
+                self._serve_json(_api_task_detail(store, task_id, thread_store=thread_store))
             elif path == "/api/cycles":
                 self._serve_json(_api_cycles(store))
             elif path == "/api/stats":
@@ -237,12 +238,25 @@ def _api_tasks(store: TaskStore) -> dict:
     }
 
 
-def _api_task_detail(store: TaskStore, task_id: str) -> dict:
+def _api_task_detail(store: TaskStore, task_id: str, *, thread_store=None) -> dict:
     task = store.get_task(task_id)
     if not task:
         return {"error": "task not found"}
     events = store.get_events(task_id)
-    return {"task": _task_full(task), "events": events}
+    result: dict = {"task": _task_full(task), "events": events}
+    if thread_store:
+        thread = thread_store.get_thread_for_task(task_id)
+        if thread:
+            result["thread"] = {
+                "id": thread.id,
+                "github_issue_number": thread.github_issue_number,
+                "status": thread.status,
+                "messages": [
+                    {"role": m.role, "body": m.body, "created_at": m.created_at}
+                    for m in thread_store.get_messages(thread.id)
+                ],
+            }
+    return result
 
 
 def _api_cycles(store: TaskStore) -> dict:
@@ -637,6 +651,7 @@ def _task_row(t) -> Dict:
         "time_cost_seconds": t.time_cost_seconds,
         "whats_learned": t.whats_learned[:200] if t.whats_learned else "",
         "human_help_request": t.human_help_request[:500] if t.human_help_request else "",
+        "github_issue_url": t.github_issue_url,
     }
 
 
@@ -655,6 +670,7 @@ def _task_full(t) -> Dict:
         "whats_learned": t.whats_learned,
         "human_help_request": t.human_help_request,
         "cycle_id": t.cycle_id,
+        "github_issue_url": t.github_issue_url,
     }
 
 
