@@ -4,8 +4,18 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { Textarea } from '@/components/ui/textarea'
 import { Input } from '@/components/ui/input'
-import type { ThreadDetail, ThreadSummary } from '../types/dashboard'
-import { formatDateTime } from '../lib/dashboardView'
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from '@/components/ui/dialog'
+import { StatusBadge } from '@/components/ui/status-badge'
+import { PriorityBadge } from '@/components/ui/priority-badge'
+import { dashboardApiClient } from '../api/dashboardApi'
+import type { TaskDetail, TaskEvent, ThreadDetail, ThreadSummary } from '../types/dashboard'
+import { formatDateTime, formatTime } from '../lib/dashboardView'
 
 const STATUS_LABELS: Record<string, { label: string; variant: 'default' | 'secondary' | 'destructive' | 'outline' }> = {
   open: { label: 'Open', variant: 'secondary' },
@@ -20,6 +30,7 @@ interface InboxPageProps {
   onSelectThread: (threadId: string) => void
   onReply: (threadId: string, body: string) => Promise<void>
   onCreateThread: (title: string, description: string) => Promise<void>
+  onCloseThread: (threadId: string, reason: string) => Promise<void>
   onRefresh: () => void
   replying: boolean
   creating: boolean
@@ -31,6 +42,7 @@ export function InboxPage({
   onSelectThread,
   onReply,
   onCreateThread,
+  onCloseThread,
   onRefresh,
   replying,
   creating,
@@ -39,6 +51,11 @@ export function InboxPage({
   const [newTitle, setNewTitle] = useState('')
   const [newDescription, setNewDescription] = useState('')
   const [showNewForm, setShowNewForm] = useState(false)
+  const [showCloseForm, setShowCloseForm] = useState(false)
+  const [closeReason, setCloseReason] = useState('')
+  const [closing, setClosing] = useState(false)
+  const [taskModal, setTaskModal] = useState<{ detail: TaskDetail; events: TaskEvent[] } | null>(null)
+  const [loadingTaskId, setLoadingTaskId] = useState('')
 
   const activeStatuses = ['waiting_reply', 'open', 'replied']
   const active = threads.filter((t) => activeStatuses.includes(t.status))
@@ -56,6 +73,28 @@ export function InboxPage({
     setNewTitle('')
     setNewDescription('')
     setShowNewForm(false)
+  }
+
+  const handleClose = async () => {
+    if (!threadDetail || closing) return
+    setClosing(true)
+    await onCloseThread(threadDetail.thread.id, closeReason.trim())
+    setClosing(false)
+    setCloseReason('')
+    setShowCloseForm(false)
+  }
+
+  const openTaskModal = async (taskId: string) => {
+    if (loadingTaskId) return
+    setLoadingTaskId(taskId)
+    try {
+      const payload = await dashboardApiClient.getTaskDetail(taskId)
+      if (payload.task) {
+        setTaskModal({ detail: payload.task as TaskDetail, events: (payload.events ?? []) as TaskEvent[] })
+      }
+    } finally {
+      setLoadingTaskId('')
+    }
   }
 
   return (
@@ -145,16 +184,65 @@ export function InboxPage({
                   Created by {threadDetail.thread.created_by} · {formatDateTime(threadDetail.thread.created_at)}
                 </p>
                 {threadDetail.task_ids.length > 0 && (
-                  <p className="text-xs text-muted-foreground mt-0.5">
-                    Tasks: {threadDetail.task_ids.map((id) => <code key={id} className="mx-0.5">{id}</code>)}
+                  <p className="text-xs text-muted-foreground mt-1 flex flex-wrap items-center gap-1">
+                    <span>Tasks:</span>
+                    {threadDetail.task_ids.map((id) => (
+                      <button
+                        key={id}
+                        type="button"
+                        onClick={() => void openTaskModal(id)}
+                        disabled={Boolean(loadingTaskId)}
+                        className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-foreground hover:bg-primary hover:text-primary-foreground transition disabled:opacity-50"
+                      >
+                        {loadingTaskId === id ? '…' : id}
+                      </button>
+                    ))}
                   </p>
                 )}
               </div>
-              <Badge variant={STATUS_LABELS[threadDetail.thread.status]?.variant ?? 'outline'}>
-                {STATUS_LABELS[threadDetail.thread.status]?.label ?? threadDetail.thread.status}
-              </Badge>
+              <div className="flex items-center gap-2 shrink-0">
+                <Badge variant={STATUS_LABELS[threadDetail.thread.status]?.variant ?? 'outline'}>
+                  {STATUS_LABELS[threadDetail.thread.status]?.label ?? threadDetail.thread.status}
+                </Badge>
+                {threadDetail.thread.status !== 'closed' && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="text-destructive border-destructive/40 hover:bg-destructive/10"
+                    onClick={() => setShowCloseForm((v) => !v)}
+                  >
+                    Close
+                  </Button>
+                )}
+              </div>
             </CardHeader>
             <CardContent className="space-y-4">
+              {/* Close form */}
+              {showCloseForm && threadDetail.thread.status !== 'closed' && (
+                <div className="rounded-xl border border-destructive/30 bg-destructive/5 p-3 space-y-2">
+                  <p className="text-xs font-semibold text-destructive uppercase tracking-wide">Close thread</p>
+                  <Textarea
+                    placeholder="Reason (optional)"
+                    value={closeReason}
+                    onChange={(e) => setCloseReason(e.target.value)}
+                    rows={2}
+                  />
+                  <div className="flex gap-2">
+                    <Button
+                      size="sm"
+                      variant="destructive"
+                      onClick={() => void handleClose()}
+                      disabled={closing}
+                    >
+                      {closing ? 'Closing…' : 'Confirm close'}
+                    </Button>
+                    <Button size="sm" variant="outline" onClick={() => { setShowCloseForm(false); setCloseReason('') }}>
+                      Cancel
+                    </Button>
+                  </div>
+                </div>
+              )}
+
               {/* Messages */}
               <div className="space-y-3 max-h-[480px] overflow-y-auto pr-1">
                 {threadDetail.messages.length === 0 && (
@@ -207,6 +295,92 @@ export function InboxPage({
           </Card>
         )}
       </div>
+      {/* Task detail modal */}
+      {taskModal && (
+        <Dialog open onOpenChange={(open) => { if (!open) setTaskModal(null) }}>
+          <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle className="pr-6">{taskModal.detail.title}</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-4 text-sm">
+              <div className="flex flex-wrap gap-3 text-muted-foreground">
+                <span>Status: <StatusBadge status={taskModal.detail.status} /></span>
+                <span>Priority: <PriorityBadge priority={taskModal.detail.priority} /></span>
+                <span>Source: <code className="rounded bg-muted px-1.5 py-0.5 text-xs">{taskModal.detail.source}</code></span>
+                <span>Created: <span className="font-mono text-xs">{formatDateTime(taskModal.detail.created_at)}</span></span>
+                <span>Updated: <span className="font-mono text-xs">{formatDateTime(taskModal.detail.updated_at)}</span></span>
+              </div>
+
+              {taskModal.detail.description && (
+                <section>
+                  <h3 className="mb-1.5 text-xs font-semibold uppercase text-muted-foreground">Description</h3>
+                  <p className="leading-relaxed">{taskModal.detail.description}</p>
+                </section>
+              )}
+
+              {taskModal.detail.human_help_request && (
+                <section>
+                  <h3 className="mb-1.5 text-xs font-semibold uppercase text-amber-400">Human Help Request</h3>
+                  <pre className="overflow-auto rounded-md border border-amber-500/20 bg-amber-500/5 p-3 text-xs text-amber-50/90">{taskModal.detail.human_help_request}</pre>
+                </section>
+              )}
+
+              {taskModal.detail.error_message && (
+                <section>
+                  <h3 className="mb-1.5 text-xs font-semibold uppercase text-destructive">Error</h3>
+                  <pre className="overflow-auto rounded-md border border-destructive/20 bg-destructive/5 p-3 text-xs text-destructive">{taskModal.detail.error_message}</pre>
+                </section>
+              )}
+
+              {taskModal.detail.plan && (
+                <section>
+                  <h3 className="mb-1.5 text-xs font-semibold uppercase text-muted-foreground">Execution Plan</h3>
+                  <pre className="overflow-auto rounded-md bg-muted p-3 text-xs">{taskModal.detail.plan}</pre>
+                </section>
+              )}
+
+              {taskModal.detail.execution_log && (
+                <section>
+                  <h3 className="mb-1.5 text-xs font-semibold uppercase text-muted-foreground">Execution Log</h3>
+                  <pre className="overflow-auto rounded-md bg-muted p-3 text-xs">{taskModal.detail.execution_log}</pre>
+                </section>
+              )}
+
+              {taskModal.detail.verification_result && (
+                <section>
+                  <h3 className="mb-1.5 text-xs font-semibold uppercase text-muted-foreground">Verification</h3>
+                  <pre className="overflow-auto rounded-md bg-muted p-3 text-xs">{taskModal.detail.verification_result}</pre>
+                </section>
+              )}
+
+              {taskModal.detail.whats_learned && (
+                <section>
+                  <h3 className="mb-1.5 text-xs font-semibold uppercase text-muted-foreground">What Was Learned</h3>
+                  <pre className="overflow-auto rounded-md bg-muted p-3 text-xs">{taskModal.detail.whats_learned}</pre>
+                </section>
+              )}
+
+              {taskModal.events.length > 0 && (
+                <section>
+                  <h3 className="mb-1.5 text-xs font-semibold uppercase text-muted-foreground">
+                    Events <span className="rounded-full bg-muted px-2 py-0.5">{taskModal.events.length}</span>
+                  </h3>
+                  <div className="space-y-1.5">
+                    {taskModal.events.map((ev, idx) => (
+                      <div key={idx} className="flex items-start gap-3 border-l-2 border-muted pl-3">
+                        <span className="font-mono text-xs font-semibold text-primary">{ev.event_type}</span>
+                        <span className="font-mono text-xs text-muted-foreground">{formatTime(ev.created_at)}</span>
+                        {ev.detail && <span className="text-xs text-muted-foreground">{ev.detail}</span>}
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              )}
+            </div>
+            <DialogFooter showCloseButton />
+          </DialogContent>
+        </Dialog>
+      )}
     </div>
   )
 }

@@ -161,6 +161,10 @@ def serve_dashboard(
                 thread_id = self.path.split("/api/threads/")[1].split("/reply")[0]
                 body = self._read_body()
                 self._serve_json(_api_thread_reply(thread_store, store, thread_id, body))
+            elif self.path.startswith("/api/threads/") and self.path.endswith("/close"):
+                thread_id = self.path.split("/api/threads/")[1].split("/close")[0]
+                body = self._read_body()
+                self._serve_json(_api_close_thread(thread_store, store, thread_id, body))
             elif self.path == "/api/threads":
                 body = self._read_body()
                 self._serve_json(_api_create_thread(thread_store, store, body))
@@ -777,6 +781,29 @@ def _api_thread_reply(thread_store, store: TaskStore, thread_id: str, body: dict
         return {"error": "body required"}
     thread_store.add_message(thread_id, "human", text)
     thread_store.set_status(thread_id, "replied")
+    return {"status": "ok", "thread_id": thread_id}
+
+
+def _api_close_thread(thread_store, store: TaskStore, thread_id: str, body: dict) -> dict:
+    """Human closes a thread; linked NEEDS_HUMAN / QUEUED tasks are moved to FAILED."""
+    if thread_store is None:
+        return {"error": "thread store unavailable"}
+    thread = thread_store.get_thread(thread_id)
+    if not thread:
+        return {"error": "thread not found"}
+    if thread.status == "closed":
+        return {"error": "thread already closed"}
+    reason = str(body.get("reason", "")).strip() or "Closed by human"
+    thread_store.add_message(thread_id, "human", reason)
+    thread_store.set_status(thread_id, "closed")
+    cancellable = {TaskStatus.NEEDS_HUMAN.value, TaskStatus.QUEUED.value}
+    for task_id in thread_store.get_tasks_for_thread(thread_id):
+        task = store.get_task(task_id)
+        if task and task.status in cancellable:
+            task.status = TaskStatus.FAILED.value
+            task.error_message = f"Cancelled by human: {reason}"
+            store.update_task(task)
+            store.add_event(task_id, "cancelled", f"Human closed thread: {reason}")
     return {"status": "ok", "thread_id": thread_id}
 
 

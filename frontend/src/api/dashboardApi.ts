@@ -224,6 +224,15 @@ export class DashboardApiClient {
       body: JSON.stringify(payload),
     })
   }
+
+  /** Human closes a thread; linked tasks in NEEDS_HUMAN/QUEUED are moved to FAILED. */
+  closeThread(threadId: string, reason: string): Promise<{ status?: string; thread_id?: string; error?: string }> {
+    return this.requestJson(`/api/threads/${encodeURIComponent(threadId)}/close`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason }),
+    })
+  }
 }
 
 /** Singleton client used by dashboard UI screens. */

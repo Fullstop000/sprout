@@ -215,6 +215,21 @@ function App() {
     }
   }
 
+  const closeThread = async (threadId: string, reason: string): Promise<void> => {
+    try {
+      const payload = await dashboardApiClient.closeThread(threadId, reason)
+      if (payload.error) {
+        showToast(payload.error, false)
+        return
+      }
+      showToast('Thread closed')
+      await refreshThreads()
+      await openThreadDetail(threadId)
+    } catch (error) {
+      showToast(`Close thread failed: ${String(error)}`, false)
+    }
+  }
+
   const refreshExperiences = useCallback(async (): Promise<void> => {
     try {
       const payload = await dashboardApiClient.getExperiences(200)
@@ -557,6 +572,7 @@ function App() {
         onSelectThread={(id) => void openThreadDetail(id)}
         onReply={(id, body) => replyToThread(id, body)}
         onCreateThread={(title, desc) => createThread(title, desc)}
+        onCloseThread={(id, reason) => closeThread(id, reason)}
         onRefresh={() => void refreshThreads()}
         replying={Boolean(replyingThreadId)}
         creating={creatingThread}
