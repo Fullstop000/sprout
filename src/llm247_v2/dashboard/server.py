@@ -110,6 +110,9 @@ def serve_dashboard(
                 limit = int(qs.get("limit", ["200"])[0])
                 phase = qs.get("phase", [""])[0]
                 self._serve_json(_api_activity(_state_dir, limit, phase))
+            elif path == "/api/discovery":
+                limit = int(qs.get("limit", ["50"])[0])
+                self._serve_json(_api_discovery(_state_dir, limit))
             elif path == "/api/llm-audit":
                 limit = int(qs.get("limit", ["50"])[0])
                 seq_after = int(qs.get("seq_after", ["0"])[0])
@@ -551,6 +554,37 @@ def _api_activity(state_dir: Path, limit: int, phase: str) -> dict:
         entries = [e for e in entries if e.get("phase") == phase]
     entries = entries[-limit:]
     return {"events": entries, "total_returned": len(entries)}
+
+
+def _api_discovery(state_dir: Path, limit: int) -> dict:
+    """Project recent discovery-related observer events into one dashboard payload."""
+    path = state_dir / "activity.jsonl"
+    entries = _read_jsonl_tail(path, max(limit * 12, 240))
+
+    discover_events = [e for e in entries if e.get("phase") == "discover"]
+    value_events = [e for e in entries if e.get("phase") == "value"]
+
+    candidates = [e for e in discover_events if e.get("action") == "candidate_found"][-limit:]
+    queued = [e for e in discover_events if e.get("action") == "queued"][-limit:]
+    scored = [e for e in value_events if e.get("action") == "scored"][-limit:]
+    filtered_out = [e for e in value_events if e.get("action") == "filtered_out"][-limit:]
+    strategy = next((e for e in reversed(discover_events) if e.get("action") == "strategy_selected"), None)
+    funnel = next((e for e in reversed(discover_events) if e.get("action") == "funnel"), None)
+
+    return {
+        "strategy": strategy,
+        "latest_funnel": funnel,
+        "candidates": candidates,
+        "scored": scored,
+        "filtered_out": filtered_out,
+        "queued": queued,
+        "counts": {
+            "candidates": len(candidates),
+            "scored": len(scored),
+            "filtered_out": len(filtered_out),
+            "queued": len(queued),
+        },
+    }
 
 
 def _api_llm_audit(state_dir: Path, limit: int, seq_after: int) -> dict:

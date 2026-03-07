@@ -1,10 +1,11 @@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { PhaseBadge } from '@/components/ui/phase-badge'
 
-import { buildDiscoverySnapshot, formatActivityMessage, formatTime, type ActivityEvent } from '../lib/dashboardView'
+import { formatActivityMessage, formatTime } from '../lib/dashboardView'
+import type { DiscoveryEventEntry, DiscoveryPayload } from '../types/dashboard'
 
 interface DiscoveryPageProps {
-  activity: ActivityEvent[]
+  discovery: DiscoveryPayload | null
 }
 
 function EventList({
@@ -14,7 +15,7 @@ function EventList({
 }: {
   title: string
   subtitle: string
-  events: ActivityEvent[]
+  events: DiscoveryEventEntry[]
 }) {
   return (
     <Card className="border-border/60 bg-card/70">
@@ -43,8 +44,16 @@ function EventList({
   )
 }
 
-export function DiscoveryPage({ activity }: DiscoveryPageProps) {
-  const snapshot = buildDiscoverySnapshot(activity)
+export function DiscoveryPage({ discovery }: DiscoveryPageProps) {
+  const snapshot = discovery ?? {
+    strategy: null,
+    latest_funnel: null,
+    candidates: [],
+    scored: [],
+    filtered_out: [],
+    queued: [],
+    counts: { candidates: 0, scored: 0, filtered_out: 0, queued: 0 },
+  }
 
   return (
     <div className="space-y-4">
@@ -69,25 +78,25 @@ export function DiscoveryPage({ activity }: DiscoveryPageProps) {
             <div className="rounded-xl border border-border/60 bg-muted/30 p-4">
               <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Latest Funnel</p>
               <p className="mt-2 text-sm text-foreground">
-                {snapshot.latestFunnel ? formatActivityMessage(snapshot.latestFunnel) : 'No funnel event observed yet.'}
+                {snapshot.latest_funnel ? formatActivityMessage(snapshot.latest_funnel) : 'No funnel event observed yet.'}
               </p>
             </div>
             <div className="grid gap-3 md:grid-cols-2">
               <div className="rounded-xl border border-border/60 bg-background/20 p-4">
                 <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Raw Candidates</p>
-                <p className="mt-2 text-3xl font-semibold">{snapshot.candidates.length}</p>
+                <p className="mt-2 text-3xl font-semibold">{snapshot.counts.candidates}</p>
               </div>
               <div className="rounded-xl border border-border/60 bg-background/20 p-4">
                 <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Queued Outcomes</p>
-                <p className="mt-2 text-3xl font-semibold">{snapshot.queued.length}</p>
+                <p className="mt-2 text-3xl font-semibold">{snapshot.counts.queued}</p>
               </div>
               <div className="rounded-xl border border-border/60 bg-background/20 p-4">
                 <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Value Scores</p>
-                <p className="mt-2 text-3xl font-semibold">{snapshot.scored.length}</p>
+                <p className="mt-2 text-3xl font-semibold">{snapshot.counts.scored}</p>
               </div>
               <div className="rounded-xl border border-border/60 bg-background/20 p-4">
                 <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Filtered Out</p>
-                <p className="mt-2 text-3xl font-semibold">{snapshot.filteredOut.length}</p>
+                <p className="mt-2 text-3xl font-semibold">{snapshot.counts.filtered_out}</p>
               </div>
             </div>
           </CardContent>
@@ -102,7 +111,7 @@ export function DiscoveryPage({ activity }: DiscoveryPageProps) {
 
       <div className="grid gap-4 xl:grid-cols-3">
         <EventList events={snapshot.scored} subtitle="Heuristic or LLM scoring decisions for candidates." title="Value Scores" />
-        <EventList events={snapshot.filteredOut} subtitle="Candidates excluded from the queue and the recorded reason." title="Filtered Out" />
+        <EventList events={snapshot.filtered_out} subtitle="Candidates excluded from the queue and the recorded reason." title="Filtered Out" />
         <EventList events={snapshot.queued} subtitle="Tasks that made it through the funnel and entered the task queue." title="Queued Outcomes" />
       </div>
     </div>

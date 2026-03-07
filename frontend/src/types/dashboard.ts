@@ -140,3 +140,33 @@ export interface BootstrapStatusPayload {
   recommended_tab: string
   message: string
 }
+
+/** Recent discovery projection derived from observer activity. */
+export interface DiscoveryEventEntry {
+  phase?: string
+  action?: string
+  detail?: string
+  reasoning?: string
+  task_id?: string
+  timestamp?: string
+  ts?: string
+  success?: boolean
+  message?: string
+  event?: string
+  [key: string]: unknown
+}
+
+export interface DiscoveryPayload {
+  strategy?: DiscoveryEventEntry | null
+  latest_funnel?: DiscoveryEventEntry | null
+  candidates: DiscoveryEventEntry[]
+  scored: DiscoveryEventEntry[]
+  filtered_out: DiscoveryEventEntry[]
+  queued: DiscoveryEventEntry[]
+  counts: {
+    candidates: number
+    scored: number
+    filtered_out: number
+    queued: number
+  }
+}

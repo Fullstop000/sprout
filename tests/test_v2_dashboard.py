@@ -8,6 +8,7 @@ from pathlib import Path
 
 from llm247_v2.dashboard.server import (
     _api_bootstrap_status,
+    _api_discovery,
     _api_delete_model,
     _api_experiences,
     _api_help_center,
@@ -288,6 +289,30 @@ class TestDashboardAPI(unittest.TestCase):
         self.assertEqual(payload["model_id"], model.id)
         self.assertIsNone(self.model_store.get_model(model.id))
         self.assertIsNone(self.model_store.get_binding(ModelBindingPoint.EXECUTION.value))
+
+    def test_discovery_api_projects_recent_activity(self):
+        activity_path = Path(self.tmp.name) / "activity.jsonl"
+        activity_path.write_text(
+            "\n".join([
+                json.dumps({"phase": "discover", "action": "strategy_selected", "detail": "change_hotspot │ queue=0", "reasoning": "Prefer neglected areas"}),
+                json.dumps({"phase": "discover", "action": "candidate_found", "task_id": "t1", "detail": "[todo] Fix stale TODO"}),
+                json.dumps({"phase": "value", "action": "scored", "task_id": "t1", "detail": "score=0.820 rec=execute │ Fix stale TODO", "reasoning": "[heuristic] impact=0.80"}),
+                json.dumps({"phase": "value", "action": "filtered_out", "task_id": "t2", "detail": "score=0.120 │ Minor cleanup", "reasoning": "heuristic score too low"}),
+                json.dumps({"phase": "discover", "action": "queued", "task_id": "t1", "detail": "Fix stale TODO (source=todo_scan)"}),
+                json.dumps({"phase": "discover", "action": "funnel", "detail": "raw=2 → heuristic=1 → llm=1 → final=1"}),
+            ]) + "\n",
+            encoding="utf-8",
+        )
+
+        payload = _api_discovery(Path(self.tmp.name), limit=10)
+
+        self.assertEqual(payload["strategy"]["action"], "strategy_selected")
+        self.assertEqual(payload["latest_funnel"]["action"], "funnel")
+        self.assertEqual(len(payload["candidates"]), 1)
+        self.assertEqual(len(payload["scored"]), 1)
+        self.assertEqual(len(payload["filtered_out"]), 1)
+        self.assertEqual(len(payload["queued"]), 1)
+        self.assertEqual(payload["counts"]["queued"], 1)
 
 
 class TestPauseResumeAPI(unittest.TestCase):
