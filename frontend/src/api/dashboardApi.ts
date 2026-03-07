@@ -3,6 +3,7 @@ import type {
   DashboardStats,
   DirectivePayload,
   BootstrapStatusPayload,
+  DiscoveryPayload,
   ExperienceEntry,
   LlmAuditEntry,
   ModelRegistryPayload,
@@ -90,6 +91,11 @@ export class DashboardApiClient {
   getActivity(limit = 250, phase = ''): Promise<{ events: Record<string, unknown>[]; total_returned: number }> {
     const query = phase ? `?limit=${limit}&phase=${encodeURIComponent(phase)}` : `?limit=${limit}`
     return this.requestJson(`/api/activity${query}`)
+  }
+
+  /** Fetch the dashboard discovery projection derived from observer activity. */
+  getDiscovery(limit = 50): Promise<DiscoveryPayload> {
+    return this.requestJson(`/api/discovery?limit=${limit}`)
   }
 
   /** Fetch recent audit list for LLM calls. */

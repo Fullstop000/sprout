@@ -24,6 +24,7 @@ import type {
   BootstrapStatusPayload,
   CycleSummary,
   DashboardStats,
+  DiscoveryPayload,
   DirectivePayload,
   ExperienceEntry,
   LlmAuditEntry,
@@ -51,6 +52,7 @@ function App() {
   const [taskEvents, setTaskEvents] = useState<TaskEvent[]>([])
 
   const [activity, setActivity] = useState<ActivityEvent[]>([])
+  const [discovery, setDiscovery] = useState<DiscoveryPayload | null>(null)
   const [activityPhase, setActivityPhase] = useState('')
   const [activityGroupBy, setActivityGroupBy] = useState<'time' | 'task'>('task')
   const [collapsedTasks, setCollapsedTasks] = useState<Set<string>>(new Set())
@@ -117,6 +119,15 @@ function App() {
       showToast(`Failed to refresh activity: ${String(error)}`, false)
     }
   }, [activityPhase])
+
+  const refreshDiscovery = useCallback(async (): Promise<void> => {
+    try {
+      const payload = await dashboardApiClient.getDiscovery(24)
+      setDiscovery(payload)
+    } catch (error) {
+      showToast(`Failed to refresh discovery: ${String(error)}`, false)
+    }
+  }, [])
 
   const refreshAudit = useCallback(async (): Promise<void> => {
     try {
@@ -387,6 +398,15 @@ function App() {
   }, [refreshActivity, activePage])
 
   useEffect(() => {
+    const kickoffId = window.setTimeout(() => void refreshDiscovery(), 0)
+    const timerId = window.setInterval(() => void refreshDiscovery(), activePage === 'discovery' ? 3000 : 8000)
+    return () => {
+      window.clearTimeout(kickoffId)
+      window.clearInterval(timerId)
+    }
+  }, [refreshDiscovery, activePage])
+
+  useEffect(() => {
     if (activePage !== 'memory') return
     const kickoffId = window.setTimeout(() => void refreshAudit(), 0)
     const timerId = window.setInterval(() => void refreshAudit(), 5000)
@@ -453,7 +473,7 @@ function App() {
       />
     )
   } else if (activePage === 'discovery') {
-    pageContent = <DiscoveryPage activity={activity} />
+    pageContent = <DiscoveryPage discovery={discovery} />
   } else if (activePage === 'memory') {
     pageContent = (
       <MemoryAuditPage
