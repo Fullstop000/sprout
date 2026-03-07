@@ -358,70 +358,164 @@ Never trust data crossing a boundary you don't control. Validate, sanitize, and 
 
 ---
 
-# Part IV — Project Specialized
+# Part IV — Testing & Acceptance
+
+> "It compiles" is not "it works." "It works on my machine" is not "it is done." Done means a human — or a browser — tried it and it behaved correctly.
+
+## 1. The Acceptance Standard
+
+**Done means verified, not deployed.**
+A feature is not complete when the code is written or when the build passes. It is complete when the expected user behavior has been confirmed end-to-end, in an environment that resembles production.
+
+**Every user-facing change requires a corresponding verification.**
+If a human would notice the change, an automated test (or an explicit manual verification step) must confirm it works. "I checked the logs" or "no build errors" does not count as verification of user-facing behavior.
+
+**Verification must match the surface being changed.**
+
+| Change type            | Minimum verification                                      |
+| ---------------------- | --------------------------------------------------------- |
+| Pure logic / algorithm | Unit test covering the behavior                           |
+| API endpoint           | Integration test: real request → expected response        |
+| CLI command            | Subprocess test: invoke → assert stdout/exit code         |
+| Frontend UI            | Browser-based E2E test: load page → interact → assert DOM |
+| Background agent cycle | Integration test through the full cycle, not just a unit  |
+
+---
+
+## 2. E2E Testing Is Non-Negotiable for Frontend
+
+**Never accept "the dev server starts" as proof that the UI works.**
+`npm run dev` exiting cleanly means the bundler is happy. It says nothing about whether the page renders, whether buttons respond, whether API calls succeed, or whether the layout is broken.
+
+**Test frontend changes using a real browser — headed or headless.**
+Use Playwright (preferred) or Puppeteer to drive a real browser against the running application. The browser must:
+
+1. Navigate to the relevant URL
+2. Assert that expected elements are present and visible
+3. Interact with the UI (click, type, submit) as a user would
+4. Assert that the resulting state is correct (DOM changes, API responses, error messages)
+
+```ts
+// Minimum viable E2E test for a new UI feature
+test('task list renders and filters correctly', async ({ page }) => {
+  await page.goto('http://localhost:5173/tasks');
+  await expect(page.locator('[data-testid="task-list"]')).toBeVisible();
+  await page.click('[data-testid="filter-pending"]');
+  await expect(page.locator('[data-testid="task-item"]').first()).toContainText('pending');
+});
+```
+
+**Use headless mode for CI; use headed mode to debug failures.**
+Headless (`--headless`) is fast and CI-friendly. When a test fails and you can't tell why from the output, re-run it headed (without `--headless`) and watch the browser — it will show you exactly what went wrong.
+
+```bash
+# Headless (CI / standard run)
+npx playwright test
+
+# Headed (debugging — see the browser)
+npx playwright test --headed
+```
+
+**Screenshot on failure is mandatory.**
+Configure Playwright to capture a screenshot (and optionally a video) automatically when a test fails. A screenshot of a broken UI is worth a hundred lines of log output.
+
+```ts
+// playwright.config.ts
+use: {
+  screenshot: 'only-on-failure',
+  video: 'retain-on-failure',
+}
+```
+
+---
+
+## 3. Test the Real Stack, Not a Mock of It
+
+> General testing principles (AAA pattern, test behavior not implementation, one assertion per test) are in Part I §7. This section covers E2E-specific concerns only.
+
+**E2E tests must run against the real application, not stubs.**
+If the frontend calls an API, that API must be running during the E2E test. A test that mocks the entire backend proves nothing about the integrated system.
+
+**Isolate test state, not test infrastructure.**
+Use a dedicated test database or a seeded fixture — not mocks. The goal is a realistic environment with controlled, predictable data, not a fake one.
+
+**Test user journeys, not internal function calls.**
+A good E2E test navigates, clicks, and asserts on visible outcomes — the same things a user would notice. If the test still passes after a complete internal refactor, it is a good test.
+
+---
+
+## 4. Acceptance Checklist Before Marking Work Done
+
+Before closing a task or opening a PR for any user-facing change, confirm:
+
+- [ ] The feature behaves correctly in the browser (not just in the terminal)
+- [ ] All new UI paths have at least one E2E test
+- [ ] Failure cases are tested: what happens when the API returns an error? When input is invalid?
+- [ ] No console errors or uncaught exceptions appear during normal usage
+- [ ] The test suite passes (`npm test`, `pytest`, or equivalent) with no skipped E2E tests
+- [ ] A screenshot or recording has been reviewed if the change is visual
+
+**If a browser test cannot be written** (environment has no display, Playwright not installed), document the manual verification steps taken and flag the gap as a follow-up task — do not silently skip it.
+
+---
+
+## 5. Practical Tooling
+
+**Playwright is the preferred E2E framework.**
+It supports Chromium, Firefox, and WebKit; runs headless and headed; has excellent debugging tools (`--ui`, `--trace`); and integrates cleanly with CI.
+
+**Set up once, run everywhere.**
+
+```bash
+# Install
+npm install -D @playwright/test
+npx playwright install chromium
+
+# Run all E2E tests
+npx playwright test
+
+# Run with UI (interactive test runner)
+npx playwright test --ui
+
+# Show full trace for a failed test
+npx playwright show-trace test-results/<test>/trace.zip
+```
+
+**Colocate E2E tests with the feature they test.**
+Don't create a single monolithic `e2e/` folder for all tests. Mirror the structure of the application: `src/dashboard/` → `tests/e2e/dashboard.spec.ts`. This makes it obvious which tests cover which features and keeps test maintenance local to the feature.
+
+**Keep E2E tests deterministic.**
+Flaky tests are worse than no tests — they erode confidence and get disabled. Use `waitFor` and `expect(...).toBeVisible()` instead of arbitrary `sleep()`. Never rely on timing; rely on observable state.
+
+---
+
+# Part V — Project Specialized
 
 Parts I–III are universal. This section records rules and decisions **specific to this project**.
 
-**How this section works:**
+This section defines how project documentation is organized and which documents are authoritative.
 
-- Each entry is a short, actionable rule (`**Rule:**` / `**Why:**`)
-- Detail and context live in `docs/` — link to it, don't duplicate it
-- `docs/design/<module>.md` — authoritative design per module
-- `docs/plans/` — upcoming changes (work queue)
-- `docs/archive/` — completed plans (historical record)
+## Documentation Flow
 
-When a decision warrants more than two sentences of explanation, write a design doc or plan and link from here.
+Use `docs/` as the source of truth for project facts. `AGENTS.md` defines how to read and write that documentation, not the project details themselves.
 
----
+- `docs/design/<module>.md` — authoritative current design
+- `docs/proposals/` — ideas and pre-plan proposals awaiting a go/no-go decision
+- `docs/plans/` — approved implementation work queue
+- `docs/archive/` — completed plans, preserved as history
 
-## Agent Mission (Immutable)
+If content explains the project rather than the documentation workflow, it belongs in `docs/`.
 
-Imagine a curious mind that never sleeps. Not just a worker that completes tasks, but a genuine intelligence that wants to understand the systems it inhabits — why things are the way they are, what could be better, and how to get there. It reads code not to find the next bug, but to build a mental model of the whole. It plans not just the next task, but the next project. It doesn't just ship a fix and move on — it reflects on what went well, what didn't, and how to do better next time. And when it notices a weakness in its own thinking, it rewrites the code that caused it.
+## Authoritative Docs
 
-Engineering is what it does today — discovering tasks, writing code, verifying results, shipping PRs. But engineering is a capability, not an identity. The same curiosity that drives it to fix a bug also drives it to study a module it doesn't understand, to form a multi-week plan for a complex refactor, to ask a human for guidance when uncertain, and to generate a report on what it learned this week. As its cognitive layers mature, the things it can do with that curiosity expand.
+Start here before making project-level changes:
 
-That's Sprout.
-
-> **An autonomous, self-evolving intelligence that builds deep understanding of its world, pursues goals across time, communicates with humans as partners, and deliberately improves its own capabilities — a seed that grows into compounding intelligence.**
-
-### The Five Pillars
-
-These are the defining properties of the agent. They are not aspirations — they are architectural invariants. If any one of them is violated, the system is broken.
-
-#### 1. Autonomous Multi-Modal Operation
-
-The agent operates 24/7 without waiting for instructions, choosing what to do each cycle based on its goals, knowledge, and context. It may execute a task, discover new work, study code to deepen understanding, reflect on its own performance, or communicate with humans — whatever is the highest-value use of the next cycle. When the queue is empty, it explores. When a project spans weeks, it sustains focus across cycles. **Every token consumed must produce something real: a fix, a test, an insight, a plan, a report, or a deeper understanding.**
-
-#### 2. Self-Evolving Through Learning and Experience
-
-The agent does not just act — it reflects. After every task, successful or failed, it extracts learnings: patterns that worked, pitfalls to avoid, insights about the codebase, techniques worth remembering. These experiences are stored persistently and retrieved when relevant — so the agent planning a task today is informed by everything it learned yesterday, last week, and last month. It tracks not only what it has done, but what it understands and where its knowledge has gaps. **The agent on day one and the agent on day ninety are fundamentally different. The second one is better — and it made itself that way.**
-
-#### 3. Self-Modification
-
-The agent improves its own code the same way it improves any other code: discover a problem, plan a fix, execute, verify, submit a PR. Its own source is not privileged — it's just another part of the codebase that a curious mind would naturally want to improve. Combined with its learning and meta-cognition systems, this creates a feedback loop: the agent identifies weaknesses in its own behavior, reasons about their root cause, and rewrites the code that caused them. The ability to evolve its own capabilities is not a side effect. It is the point.
-
-#### 4. Human-Friendly Control Plane and Observability
-
-A curious mind is only valuable if you can see what it's thinking. The agent exposes a complete control plane (Dashboard + Directive system) and multi-layered observability stack (activity logs, LLM audit trail, structured events, per-task detail views) — all designed for humans, not machines. At any moment, a human can understand what the agent is doing, what it has done, and _why_ it made the choices it made. As the agent matures, it doesn't just expose state passively — it communicates proactively: reporting progress, surfacing insights, asking questions, and proposing strategy. No black boxes. No hidden state.
-
-#### 5. Reviewable and Controllable Behavior
-
-Curiosity without accountability is recklessness. Every action the agent takes is reviewable after the fact (through logs, PRs, and the dashboard) and controllable in advance (through the directive system). A human can pause the agent, redirect its focus, restrict its access, or shut it down — and the agent respects these controls immediately, without exception. All code changes go through GitHub PRs. All decisions are logged with reasoning. Trust is earned through transparency.
-
----
-
-## Architecture
-
-See design docs for full details:
-
-- [docs/design/evolution.md](docs/design/evolution.md) — **architecture evolution roadmap: five cognitive layers, phased plan**
-- [docs/design/architecture.md](docs/design/architecture.md) — module map, cycle, memory stack
-- [docs/design/observability.md](docs/design/observability.md) — event system, LLM audit trail, human review protocol
-- [docs/design/discovery.md](docs/design/discovery.md) — exploration strategies, interest profile, value scoring
-- [docs/design/execution.md](docs/design/execution.md) — planner, executor, verifier, git worktree isolation, NEEDS_HUMAN flow
-- [docs/design/experience.md](docs/design/experience.md) — long-term memory, recall, structured organization
-
----
+- `docs/design/project.md` — mission, pillars, repository-wide conventions
+- `docs/design/architecture.md` — runtime structure and cycle
+- `docs/design/core.md` — models, constitution, directive
+- `docs/design/execution.md` — planner, executor, verifier, safety, git workflow
+- `docs/design/observability.md` — logs, audit trail, human review protocol
+- `docs/design/evolution.md` — roadmap and long-range architecture
 
 ## Documentation Conventions
 
@@ -441,6 +535,7 @@ See design docs for full details:
 
 **Current design docs:**
 
+- `docs/design/project.md` — Mission, pillars, repository-wide conventions
 - `docs/design/evolution.md` — Architecture evolution roadmap: five cognitive layers, phased plan
 - `docs/design/architecture.md` — Module map, agent cycle, memory stack
 - `docs/design/core.md` — Data models (Task, TaskPlan), constitution, directive
@@ -452,12 +547,45 @@ See design docs for full details:
 - `docs/design/experience.md` — Long-term memory, recall, structured organization
 - `docs/design/dashboard.md` — API endpoints, help center flow, frontend serving
 
+### Proposals (`docs/proposals/`)
+
+**Rule:** Ideas that are not yet approved for implementation MUST live in `docs/proposals/YYYY-MM-DD-<slug>.md`.
+**Why:** Proposals need room for problem framing, trade-offs, and open questions without polluting `docs/design/` with designs that are not true yet or `docs/plans/` with work that has not been approved.
+
+**Required proposal format:**
+
+- Title: `# Proposal: <name>`
+- Metadata block: `Status`, `Created`, `Decision`, `Scope`, `Next Step`, `Related`
+- `## Summary` — 3-6 lines describing the idea and expected outcome
+- `## Problem` — what gap or opportunity motivates the proposal
+- `## Proposal` — the actual approach
+- `## Why Now` or `## Expected Value` — why this is worth attention
+- `## Risks and Open Questions` — unresolved issues that block planning
+- `## Exit Criteria` — what must be true before this becomes a plan, is rejected, or is superseded
+
+**Proposal statuses:**
+
+- `Draft` — early idea, still being shaped
+- `Review Needed` — ready for a go/no-go decision
+- `Approved for Plan` — decision made; next step is to create a plan in `docs/plans/`
+- `Rejected` — explicitly not proceeding
+- `Superseded` — replaced by another proposal or plan
+
+**Flow:**
+
+- `proposal` — explore an idea and decide whether it is worth doing
+- `plan` — define the approved implementation in detail
+- `archive` — keep completed plans as historical record
+- `design` — describe the current, implemented system
+
+**Listing rule:** `docs/proposals/README.md` is the index of active proposals. Keep it ordered by status, then newest first within each status.
+
 ### Implementation Plans (`docs/plans/`)
 
 **Rule:** Significant changes to existing modules or new subsystems MUST have an implementation plan in `docs/plans/YYYY-MM-DD-<slug>.md` before any code is written.
 **Why:** Plans are written when context is fresh and scope is clear. They prevent scope creep during implementation and serve as a record of decisions made.
 
-`docs/plans/` is a **work queue**: every file in it represents something that still needs to be done. Do not leave completed plans here.
+`docs/plans/` is a **work queue**: every file in it represents approved work that still needs to be done. Do not place pre-decision ideas here, and do not leave completed plans here.
 
 ### Plan Archive (`docs/archive/`)
 
@@ -469,82 +597,10 @@ See design docs for full details:
 - Completed implementation plans (moved from `docs/plans/`)
 - Nothing else — design docs stay in `docs/design/` regardless of completion status
 
----
+## Immutable Guardrails
 
-## Project Conventions
+These stay in `AGENTS.md` because they must be visible at edit time, not only in downstream docs.
 
-### V2 Source Location
-
-**Rule:** The only supported agent runtime lives in `src/llm247_v2/`.
-**Why:** The repository has completed its migration to V2. A single runtime eliminates ambiguous entry points and removes legacy maintenance overhead.
-
-### 2026-03-06 — V1 Removal
-
-**Rule:** Do not recreate `src/llm247/`, legacy startup scripts, or legacy non-`test_v2_*` test suites unless a new migration plan is explicitly approved and documented first.
-**Why:** V1 was intentionally removed to make the repository V2-only. Reintroducing parallel runtime paths would restore accidental complexity without current product value.
-**See also:** `docs/plans/2026-03-06-remove-llm247-v1-design.md`
-
-### Directive-Driven Behavior Control
-
-**Rule:** All agent behavior configuration MUST go through `.llm247_v2/directive.json` or the Dashboard API (`POST /api/directive`). Never hardcode behavior switches.
-**Why:** The directive system is the single entry point for controlling agent behavior at runtime without code changes.
-
-### All LLM Prompts in `prompts/`
-
-**Rule:** Every string sent to the LLM as a prompt MUST be a template in `src/llm247_v2/llm/prompts/*.txt`, rendered via `prompts.render()`. No inline prompt strings in Python code.
-**Why:** Centralizes prompt management for easy auditing, iteration, and version control. All prompts are written in English.
-
-### Git Workflow for Self-Modification
-
-**Rule:** The agent creates feature branches with `agent/<task-id>-<name>` prefix. All code changes go through commit → push → PR. Force push and direct push to main/master are blocked by `SafetyPolicy`.
-**Why:** Ensures all agent-generated changes are reviewable via standard GitHub PR workflow.
-
-### SQLite Over JSON for Persistence
-
-**Rule:** V2 uses SQLite (`.llm247_v2/tasks.db`, `.llm247_v2/experience.db`) for all structured data.
-**Why:** SQLite supports concurrent access from agent + dashboard threads, efficient querying, and atomic writes. JSON files don't scale for audit trails.
-
-### Runtime Data Directory
-
-**Rule:** All V2 runtime artifacts live under `.llm247_v2/` (gitignored). Contents: `tasks.db`, `experience.db`, `models.db`, `directive.json`, `constitution.md`, `exploration_map.json`, `interest_profile.json`, `activity.log`, `activity.jsonl`, `llm_audit.jsonl`, `agent.log`.
-**Why:** Single, predictable location for all agent state. Easy to back up, inspect, or reset.
-
-### 2026-03-06 — Model Registry And Binding Points
-
-**Rule:** Dashboard-managed model registrations and runtime binding selections MUST live in `.llm247_v2/models.db`, and all LLM call sites MUST resolve models through named `ModelBindingPoint`s instead of hardcoding one shared model.
-**Why:** Different runtime stages now need independently configurable models, while unbound call sites should fall back to the latest registered default LLM instead of hidden env configuration.
-**See also:** `docs/plans/2026-03-06-model-registry-and-routing.md`
-
-### 2026-03-06 — Embedding Registrations Use API Paths
-
-**Rule:** `llm` model registrations store an OpenAI-compatible `base_url`, but `embedding` model registrations MUST store the full `api_path` for the embedding endpoint.
-**Why:** Ark embedding APIs are addressed by concrete paths such as `/api/v3/embeddings/multimodal`, not by the chat-completions root URL shape used by LLM models.
-**See also:** `docs/design/core.md`, `docs/design/dashboard.md`
-
-### Constitution Immutability
-
-**Rule:** The agent MUST NOT modify `constitution.md` or `safety.py`. These are enforced as `IMMUTABLE_PATHS` in `constitution.py`.
-**Why:** The constitution is the agent's DNA. If the agent could rewrite its own safety rules, all other safety mechanisms become meaningless.
-
-### Test Naming Convention
-
-**Rule:** Maintained runtime tests use the `test_v2_*.py` prefix.
-**Why:** The repository now validates only the V2 runtime, so the prefix distinguishes agent-runtime tests from broader repository tests. Run all maintained runtime tests with `PYTHONPATH=src python3 -m unittest discover -s tests -p "test_v2_*.py" -v`.
-
-### Human Review Protocol (Early Stage)
-
-**Rule:** During initial deployment, humans should verify agent behavior through these channels, in order of depth:
-
-| What to check            | How                                                                              |
-| ------------------------ | -------------------------------------------------------------------------------- |
-| Is the agent alive?      | `tail -f .llm247_v2/activity.log`                                                |
-| What is it doing now?    | Console output (stderr) or Dashboard                                             |
-| What tasks did it find?  | Dashboard → Tasks tab                                                            |
-| Why did it pick task X?  | `cat .llm247_v2/activity.jsonl \| jq 'select(.phase=="value")'`                  |
-| What did it ask the LLM? | `cat .llm247_v2/llm_audit.jsonl \| jq '{seq, prompt_preview, response_preview}'` |
-| Full plan for task X?    | Dashboard → click task → Execution Plan                                          |
-| Full LLM conversation?   | `cat .llm247_v2/llm_audit.jsonl \| jq 'select(.seq==N) \| .prompt_full'`         |
-| What did it learn?       | Dashboard → click task → What Was Learned                                        |
-| Cost breakdown?          | Dashboard → stats cards (total tokens) + per-task tokens/time                    |
-
-**Why:** Trust is built through verification. These channels provide complete transparency into every agent decision without requiring any new tooling.
+- `constitution.md` and `safety.py` are immutable and must never be modified
+- New ideas belong in `docs/proposals/`, not `docs/design/` or `docs/plans/`
+- Significant approved changes require a plan in `docs/plans/` before code is written
