@@ -540,17 +540,184 @@ Frontend renders the thread as a read-only comment list with `agent` / `human` r
 
 ## Test Plan
 
+### Unit tests (mocked GitHub API)
+
 | Layer | What to test |
 |-------|-------------|
-| `GitHubClient` | Mock `httpx`; assert correct API calls for each method |
+| `GitHubClient` | Mock `httpx`; assert correct API calls for list/create/comment/close/label |
 | `ThreadStore` | Upsert idempotency; `link_task` / `get_tasks_for_thread`; comment outbox queue/flush |
 | `sync_github_issues` | New issue → `new_threads`; human comment → `unblocked`; human close → cancelled; outbox flush |
 | Agent cycle — Shape B | Mock client returns open issue → task created, thread linked, ack comment queued |
-| Agent cycle — Shape A | Task fails → no thread exists → new issue opened, thread created; task fails again → comment on existing issue |
+| Agent cycle — Shape A | Task fails → no thread → new issue opened; task fails again → comment on existing issue |
 | Agent cycle — unblock | `human_responded` thread → task re-queued as `human_resolved` |
 | Agent cycle — human close | Closed issue detected → linked tasks cancelled |
 | Agent cycle — all sub-tasks done | Last task completes → issue closed |
-| Dashboard | `thread` field in task detail response when `ThreadStore` populated |
+| Dashboard | `thread` field present in task detail response when `ThreadStore` populated |
+
+---
+
+### E2E tests (real GitHub — `Fullstop000/sprout` repo)
+
+E2E tests hit the real GitHub API using a dedicated test label `sprout-e2e-test` to isolate test issues from production `sprout` issues. Every test creates its own issues and cleans them up (close) in `tearDown`, regardless of pass/fail.
+
+**Guard:** tests are skipped automatically when `GITHUB_TOKEN` is not set.
+
+```python
+# tests/e2e/test_github_interaction_e2e.py
+
+import os, unittest
+from llm247_v2.github.client import GitHubClient
+
+SKIP = not os.getenv("GITHUB_TOKEN")
+OWNER = "Fullstop000"
+REPO  = "sprout"
+LABEL = "sprout-e2e-test"   # dedicated label, never scanned by production agent
+
+@unittest.skipIf(SKIP, "GITHUB_TOKEN not set")
+class TestGitHubClientE2E(unittest.TestCase):
+    """Verify GitHubClient against the real sprout repo."""
+
+    def setUp(self):
+        self.client = GitHubClient(
+            token=os.environ["GITHUB_TOKEN"],
+            owner=OWNER, repo=REPO, label=LABEL,
+        )
+        self._created_issues: list[int] = []
+
+    def tearDown(self):
+        for number in self._created_issues:
+            try:
+                self.client.close_issue(number, state_reason="not_planned")
+            except Exception:
+                pass
+
+    def _create(self, title: str, body: str = "e2e test") -> dict:
+        issue = self.client.create_issue(title=title, body=body)
+        self._created_issues.append(issue["number"])
+        return issue
+
+    def test_create_and_list_issue(self):
+        issue = self._create("[e2e] create and list")
+        issues = self.client.list_open_issues()
+        numbers = [i["number"] for i in issues]
+        self.assertIn(issue["number"], numbers)
+
+    def test_create_comment_and_fetch(self):
+        issue = self._create("[e2e] comment round-trip")
+        self.client.create_comment(issue["number"], "hello from e2e test")
+        comments = self.client.get_issue_comments(issue["number"])
+        self.assertTrue(any("hello from e2e test" in c["body"] for c in comments))
+
+    def test_add_and_remove_label(self):
+        issue = self._create("[e2e] label management")
+        self.client.add_labels(issue["number"], ["needs-human"])
+        self.client.remove_label(issue["number"], "needs-human")
+        # no assertion needed — absence of exception is the contract
+
+    def test_close_issue(self):
+        issue = self._create("[e2e] close")
+        self.client.close_issue(issue["number"], state_reason="completed")
+        self._created_issues.remove(issue["number"])   # already closed, skip tearDown
+        issues = self.client.list_open_issues()
+        self.assertNotIn(issue["number"], [i["number"] for i in issues])
+
+    def test_since_cursor_filters_old_issues(self):
+        from datetime import datetime, timezone
+        future = datetime(2099, 1, 1, tzinfo=timezone.utc).isoformat()
+        issues = self.client.list_open_issues(since=future)
+        self.assertEqual(issues, [])
+
+
+@unittest.skipIf(SKIP, "GITHUB_TOKEN not set")
+class TestSyncE2E(unittest.TestCase):
+    """Full sync cycle against the real repo."""
+
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+        from llm247_v2.storage.thread_store import ThreadStore
+        from llm247_v2.storage.store import TaskStore
+
+        self.tmp = tempfile.TemporaryDirectory()
+        base = Path(self.tmp.name)
+        self.client = GitHubClient(
+            token=os.environ["GITHUB_TOKEN"],
+            owner=OWNER, repo=REPO, label=LABEL,
+        )
+        self.thread_store = ThreadStore(base / "threads.db")
+        self.task_store = TaskStore(base / "tasks.db")
+        self._created_issues: list[int] = []
+
+    def tearDown(self):
+        for number in self._created_issues:
+            try:
+                self.client.close_issue(number, state_reason="not_planned")
+            except Exception:
+                pass
+        self.thread_store.close()
+        self.task_store.close()
+        self.tmp.cleanup()
+
+    def _create(self, title: str, body: str = "e2e test") -> dict:
+        issue = self.client.create_issue(title=title, body=body, labels=[LABEL])
+        self._created_issues.append(issue["number"])
+        return issue
+
+    def test_shape_b_new_issue_appears_in_sync(self):
+        from llm247_v2.github.sync import sync_github_issues
+        issue = self._create("[e2e] shape B pickup")
+        result = sync_github_issues(self.client, self.thread_store, self.task_store, since=None)
+        thread_numbers = [t.github_issue_number for t in result.new_threads]
+        self.assertIn(issue["number"], thread_numbers)
+
+    def test_human_comment_triggers_unblock(self):
+        from llm247_v2.github.sync import sync_github_issues
+        from llm247_v2.core.models import Task, TaskStatus
+
+        # Simulate Shape A: task exists and is linked to an issue
+        issue = self._create("[e2e] shape A unblock")
+        sync_result = sync_github_issues(self.client, self.thread_store, self.task_store, since=None)
+        thread = next(t for t in sync_result.new_threads if t.github_issue_number == issue["number"])
+
+        task = Task(id="e2e-task-1", title="e2e task", description="", source="manual",
+                    status=TaskStatus.NEEDS_HUMAN.value, github_issue_url=issue["html_url"])
+        self.task_store.insert_task(task)
+        self.thread_store.link_task(thread.id, task.id)
+        self.thread_store.set_status(thread.id, "awaiting_human")
+
+        # Human replies
+        self.client.create_comment(issue["number"], "Try using approach X instead")
+
+        # Next sync detects the reply
+        result2 = sync_github_issues(self.client, self.thread_store, self.task_store,
+                                     since=thread.last_synced_at)
+        unblocked_ids = [t.github_issue_number for t, _ in result2.unblocked]
+        self.assertIn(issue["number"], unblocked_ids)
+
+    def test_comment_outbox_posts_to_github(self):
+        from llm247_v2.github.sync import sync_github_issues
+        issue = self._create("[e2e] outbox flush")
+        result = sync_github_issues(self.client, self.thread_store, self.task_store, since=None)
+        thread = next(t for t in result.new_threads if t.github_issue_number == issue["number"])
+
+        self.thread_store.queue_agent_comment(thread.id, "agent outbox test comment")
+        sync_github_issues(self.client, self.thread_store, self.task_store, since=None)
+
+        comments = self.client.get_issue_comments(issue["number"])
+        self.assertTrue(any("agent outbox test comment" in c["body"] for c in comments))
+```
+
+**Running E2E tests:**
+
+```bash
+# Requires a token with issues:write on Fullstop000/sprout
+GITHUB_TOKEN=<token> python -m unittest tests/e2e/test_github_interaction_e2e.py -v
+
+# Unit tests (no token needed)
+python -m unittest discover -s tests -p "test_v2_*.py"
+```
+
+**CI behaviour:** E2E tests run only in workflows where `GITHUB_TOKEN` is explicitly provided as a secret. The standard `test_v2_*.py` discovery pattern excludes the `e2e/` directory, so CI that doesn't set the token never sees these tests.
 
 ---
 
@@ -569,3 +736,4 @@ Frontend renders the thread as a read-only comment list with `agent` / `human` r
 - [ ] `tests/test_v2_thread_store.py`
 - [ ] `tests/test_v2_github_sync.py`
 - [ ] `tests/test_v2_agent.py` — extend with GitHub interaction scenarios
+- [ ] `tests/e2e/test_github_interaction_e2e.py` — real GitHub E2E tests (skipped without `GITHUB_TOKEN`)
