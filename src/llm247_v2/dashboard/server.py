@@ -266,7 +266,6 @@ def _api_task_detail(store: TaskStore, task_id: str, *, thread_store=None) -> di
         if thread:
             result["thread"] = {
                 "id": thread.id,
-                "github_issue_number": thread.github_issue_number,
                 "status": thread.status,
                 "messages": [
                     {"role": m.role, "body": m.body, "created_at": m.created_at}
