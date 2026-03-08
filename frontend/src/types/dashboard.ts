@@ -206,3 +206,63 @@ export interface DiscoveryPayload {
     queued: number
   }
 }
+
+export type DashboardSummaryPage = 'overview' | 'work' | 'discovery' | 'memory' | 'control' | 'inbox'
+
+export type DashboardSummaryAction =
+  | { kind: 'task'; label: string; taskId: string }
+  | { kind: 'thread'; label: string; threadId: string }
+  | { kind: 'page'; label: string; page: DashboardSummaryPage }
+
+export interface DashboardSummaryMetric {
+  label: string
+  value: string
+  hint: string
+}
+
+export interface DashboardSummaryChange {
+  id: string
+  label: string
+  title: string
+  why: string
+  timestamp: string
+  meta: string
+  tone: 'default' | 'success' | 'warning'
+  action: DashboardSummaryAction
+}
+
+export interface DashboardSummaryAttentionItem {
+  id: string
+  label: string
+  title: string
+  detail: string
+  tone: 'default' | 'warning'
+  action: DashboardSummaryAction
+}
+
+export interface DashboardSummaryDestination {
+  page: DashboardSummaryPage
+  label: string
+  description: string
+  countLabel?: string
+}
+
+export interface DashboardSummaryBriefing {
+  eyebrow: string
+  title: string
+  summary: string
+  statusLine: string
+  updatedLabel: string
+  metrics: DashboardSummaryMetric[]
+  notes: string[]
+  activeTask?: TaskSummary
+  latestCycle?: CycleSummary
+}
+
+export interface DashboardSummaryPayload {
+  updated_at: string
+  briefing: DashboardSummaryBriefing
+  changes: DashboardSummaryChange[]
+  attention: DashboardSummaryAttentionItem[]
+  destinations: DashboardSummaryDestination[]
+}

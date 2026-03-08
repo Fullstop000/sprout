@@ -19,6 +19,7 @@ from llm247_v2.dashboard.server import (
     _api_resolve_help_request,
     _api_set_model_bindings,
     _api_set_paused,
+    _api_summary,
     _api_stats,
     _api_task_detail,
     _api_tasks,
@@ -78,6 +79,57 @@ class TestDashboardAPI(unittest.TestCase):
         self.assertEqual(stats["input_tokens"], 120)
         self.assertEqual(stats["output_tokens"], 45)
         self.assertEqual(stats["total_tokens"], 165)
+
+    def test_api_summary_includes_briefing_changes_and_attention(self):
+        thread_store = ThreadStore(Path(self.tmp.name) / "threads.db")
+        task = Task(
+            id="t-summary",
+            title="Review dashboard summary",
+            description="refresh homepage",
+            source="manual",
+            status=TaskStatus.NEEDS_HUMAN.value,
+            priority=1,
+            prompt_token_cost=120,
+            completion_token_cost=45,
+            token_cost=165,
+            human_help_request="Need a human decision on summary wording.",
+        )
+        self.store.insert_task(task)
+        self.store.add_event(task.id, "Execution.state.task_needs_human", "Task needs human review")
+
+        activity_path = Path(self.tmp.name) / "activity.jsonl"
+        activity_path.write_text(
+            json.dumps({
+                "module": "Execution",
+                "family": "state",
+                "event_name": "task_needs_human",
+                "task_id": task.id,
+                "timestamp": "2026-03-08T10:00:00+00:00",
+                "detail": "Task needs human review",
+                "reasoning": "Verification evidence is incomplete.",
+            }) + "\n",
+            encoding="utf-8",
+        )
+
+        thread = thread_store.create_thread("Need reply", "human", "Can you review this?")
+        thread_store.set_status(thread.id, "waiting_reply")
+
+        payload = _api_summary(
+            self.store,
+            self.directive_path,
+            Path(self.tmp.name),
+            model_store=self.model_store,
+            thread_store=thread_store,
+        )
+
+        self.assertEqual(payload["briefing"]["metrics"][0]["label"], "Input tokens")
+        self.assertEqual(payload["briefing"]["metrics"][0]["value"], "120")
+        self.assertTrue(any(item["label"] == "Needs human" for item in payload["attention"]))
+        self.assertTrue(any(item["label"] == "Inbox" for item in payload["attention"]))
+        self.assertEqual(payload["changes"][0]["action"]["kind"], "task")
+        self.assertEqual(payload["changes"][0]["action"]["taskId"], task.id)
+        self.assertTrue(any(item["page"] == "inbox" for item in payload["destinations"]))
+        thread_store.close()
 
     def test_inject_task(self):
         result = _api_inject_task(self.store, {"title": "Manual task", "priority": 1})

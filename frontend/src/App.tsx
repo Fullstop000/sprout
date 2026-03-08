@@ -24,7 +24,7 @@ import {
 import type {
   BootstrapStatusPayload,
   CycleSummary,
-  DashboardStats,
+  DashboardSummaryPayload,
   DiscoveryPayload,
   DirectivePayload,
   ExperienceEntry,
@@ -38,8 +38,19 @@ import type {
   ThreadSummary,
 } from './types/dashboard'
 
+function readInitialPage(): DashboardPage {
+  const hash = window.location.hash.replace(/^#/, '').trim()
+  if (hash.startsWith('page=')) {
+    const candidate = hash.slice('page='.length) as DashboardPage
+    if (['overview', 'work', 'inbox', 'discovery', 'memory', 'control'].includes(candidate)) {
+      return candidate
+    }
+  }
+  return 'overview'
+}
+
 function App() {
-  const [activePage, setActivePage] = useState<DashboardPage>('overview')
+  const [activePage, setActivePage] = useState<DashboardPage>(() => readInitialPage())
   const [workPanel, setWorkPanel] = useState<WorkPanel>('tasks')
   const [memoryPanel, setMemoryPanel] = useState<MemoryPanel>('activity')
   const [controlPanel, setControlPanel] = useState<ControlPanel>('models')
@@ -47,9 +58,9 @@ function App() {
 
   const [tasks, setTasks] = useState<TaskSummary[]>([])
   const [cycles, setCycles] = useState<CycleSummary[]>([])
-  const [stats, setStats] = useState<DashboardStats>({})
   const [directive, setDirective] = useState<DirectivePayload | null>(null)
   const [bootstrapStatus, setBootstrapStatus] = useState<BootstrapStatusPayload | null>(null)
+  const [summary, setSummary] = useState<DashboardSummaryPayload | null>(null)
 
   const [taskDetail, setTaskDetail] = useState<TaskDetail | null>(null)
   const [taskEvents, setTaskEvents] = useState<TaskEvent[]>([])
@@ -90,33 +101,57 @@ function App() {
 
   const [pauseLoading, setPauseLoading] = useState(false)
   const [resolvingTaskId, setResolvingTaskId] = useState('')
+  const [summaryError, setSummaryError] = useState('')
+  const [activityError, setActivityError] = useState('')
+  const [discoveryError, setDiscoveryError] = useState('')
+  const [auditError, setAuditError] = useState('')
+  const [helpError, setHelpError] = useState('')
+  const [threadsError, setThreadsError] = useState('')
+  const [experiencesError, setExperiencesError] = useState('')
+  const [modelsError, setModelsError] = useState('')
 
   const showToast = (message: string, ok = true): void => {
     if (ok) toast.success(message)
     else toast.error(message)
   }
 
+  const friendlyLoadError = (scope: string, error: unknown): string => {
+    const message = String(error)
+    if (message.includes('Failed to fetch')) {
+      return `${scope} is unavailable right now. Check whether the dashboard backend is running, then try again.`
+    }
+    if (message.includes('Request failed (500)')) {
+      return `${scope} could not be loaded because the dashboard API returned an internal error. You can keep using the last visible data and retry after the backend is healthy.`
+    }
+    if (message.includes('Request failed (404)')) {
+      return `${scope} is not available from this dashboard build yet.`
+    }
+    return `${scope} could not be loaded right now. ${message}`
+  }
+
   const refreshSummary = useCallback(async (): Promise<void> => {
     try {
-      const [taskPayload, cyclePayload, statsPayload, directivePayload, bootstrapPayload] = await Promise.all([
+      const [taskPayload, cyclePayload, statsPayload, directivePayload, bootstrapPayload, summaryPayload] = await Promise.all([
         dashboardApiClient.getTasks(),
         dashboardApiClient.getCycles(),
         dashboardApiClient.getStats(),
         dashboardApiClient.getDirective(),
         dashboardApiClient.getBootstrapStatus(),
+        dashboardApiClient.getSummary(),
       ])
       setTasks(taskPayload.tasks ?? [])
       setCycles(cyclePayload.cycles ?? [])
-      setStats(statsPayload)
       setHelpCount(Number(statsPayload.status_counts?.needs_human ?? 0))
       setDirective(directivePayload)
       setBootstrapStatus(bootstrapPayload)
+      setSummary(summaryPayload)
       setSourcesJson(JSON.stringify(directivePayload.task_sources ?? {}, null, 2))
       setMetaText(`updated ${formatTime(taskPayload.updated_at)} · auto-refresh 5s`)
+      setSummaryError('')
     } catch (error) {
-      const message = `Refresh failed: ${String(error)}`
+      const message = friendlyLoadError('Overview data', error)
+      setSummaryError(message)
       setMetaText(message)
-      showToast(message, false)
     }
   }, [])
 
@@ -124,8 +159,9 @@ function App() {
     try {
       const payload = await dashboardApiClient.getActivity(300, activityPhase)
       setActivity((payload.events ?? []) as ActivityEvent[])
+      setActivityError('')
     } catch (error) {
-      showToast(`Failed to refresh activity: ${String(error)}`, false)
+      setActivityError(friendlyLoadError('Activity history', error))
     }
   }, [activityPhase])
 
@@ -133,8 +169,9 @@ function App() {
     try {
       const payload = await dashboardApiClient.getDiscovery(24)
       setDiscovery(payload)
+      setDiscoveryError('')
     } catch (error) {
-      showToast(`Failed to refresh discovery: ${String(error)}`, false)
+      setDiscoveryError(friendlyLoadError('Discovery history', error))
     }
   }, [])
 
@@ -142,8 +179,9 @@ function App() {
     try {
       const payload = await dashboardApiClient.getLlmAudit(100)
       setAudit(payload.entries)
+      setAuditError('')
     } catch (error) {
-      showToast(`Failed to refresh audit: ${String(error)}`, false)
+      setAuditError(friendlyLoadError('LLM audit', error))
     }
   }, [])
 
@@ -151,8 +189,9 @@ function App() {
     try {
       const payload = await dashboardApiClient.getHelpCenter()
       setHelpRequests(payload.requests ?? [])
+      setHelpError('')
     } catch (error) {
-      showToast(`Failed to refresh help center: ${String(error)}`, false)
+      setHelpError(friendlyLoadError('Help center', error))
     }
   }, [])
 
@@ -161,8 +200,9 @@ function App() {
       const payload = await dashboardApiClient.getThreads()
       setThreads(payload.threads ?? [])
       setInboxUnread((payload.threads ?? []).filter((t) => t.status === 'waiting_reply').length)
+      setThreadsError('')
     } catch (error) {
-      showToast(`Failed to refresh inbox: ${String(error)}`, false)
+      setThreadsError(friendlyLoadError('Inbox threads', error))
     }
   }, [])
 
@@ -178,6 +218,11 @@ function App() {
       showToast(`Failed to load thread: ${String(error)}`, false)
     }
   }, [])
+
+  const revealThread = useCallback(async (threadId: string): Promise<void> => {
+    setActivePage('inbox')
+    await openThreadDetail(threadId)
+  }, [openThreadDetail])
 
   const replyToThread = async (threadId: string, body: string): Promise<void> => {
     if (replyingThreadId) return
@@ -252,8 +297,9 @@ function App() {
     try {
       const payload = await dashboardApiClient.getExperiences(200)
       setExperiences(payload.experiences ?? [])
+      setExperiencesError('')
     } catch (error) {
-      showToast(`Failed to refresh experiences: ${String(error)}`, false)
+      setExperiencesError(friendlyLoadError('Experience memory', error))
     }
   }, [])
 
@@ -267,8 +313,9 @@ function App() {
           Object.entries(payload.bindings ?? {}).map(([bindingPoint, binding]) => [bindingPoint, binding.model_id ?? '']),
         ),
       )
+      setModelsError('')
     } catch (error) {
-      showToast(`Failed to refresh model registry: ${String(error)}`, false)
+      setModelsError(friendlyLoadError('Model registry', error))
     }
   }, [])
 
@@ -484,6 +531,10 @@ function App() {
   }
 
   useEffect(() => {
+    window.location.hash = `page=${activePage}`
+  }, [activePage])
+
+  useEffect(() => {
     const kickoffId = window.setTimeout(() => void refreshSummary(), 0)
     const timerId = window.setInterval(() => void refreshSummary(), 5000)
     return () => {
@@ -562,15 +613,12 @@ function App() {
   if (activePage === 'overview') {
     pageContent = (
       <OverviewPage
-        activity={activity}
-        bootstrapStatus={bootstrapStatus}
-        cycles={cycles}
-        directive={directive}
-        helpRequests={helpRequests}
+        errorMessage={summaryError}
+        onRetry={() => void refreshSummary()}
         onNavigate={setActivePage}
         onOpenTaskDetail={(taskId) => void openTaskDetail(taskId)}
-        stats={stats}
-        tasks={tasks}
+        onOpenThread={(threadId) => void revealThread(threadId)}
+        summary={summary}
       />
     )
   } else if (activePage === 'work') {
@@ -578,8 +626,10 @@ function App() {
       <WorkPage
         activePanel={workPanel}
         cycles={cycles}
+        errorMessage={summaryError}
         onChangePanel={setWorkPanel}
         onOpenTaskDetail={(taskId) => void openTaskDetail(taskId)}
+        onRetry={() => void refreshSummary()}
         taskDetail={taskDetail}
         taskEvents={taskEvents}
         tasks={tasks}
@@ -588,6 +638,7 @@ function App() {
   } else if (activePage === 'inbox') {
     pageContent = (
       <InboxPage
+        errorMessage={threadsError}
         threads={threads}
         threadDetail={threadDetail}
         onSelectThread={(id) => void openThreadDetail(id)}
@@ -601,20 +652,23 @@ function App() {
       />
     )
   } else if (activePage === 'discovery') {
-    pageContent = <DiscoveryPage discovery={discovery} />
+    pageContent = <DiscoveryPage discovery={discovery} errorMessage={discoveryError} onRetry={() => void refreshDiscovery()} />
   } else if (activePage === 'memory') {
     pageContent = (
       <MemoryAuditPage
         activePanel={memoryPanel}
         activity={activity}
+        activityError={activityError}
         activityGroupBy={activityGroupBy}
-        activityPhase={activityPhase}
+        activityModule={activityPhase}
         audit={audit}
+        auditError={auditError}
         auditDetail={auditDetail}
         collapsedTasks={collapsedTasks}
+        experienceError={experiencesError}
         experiences={experiences}
         onChangeActivityGroupBy={setActivityGroupBy}
-        onChangeActivityPhase={setActivityPhase}
+        onChangeActivityModule={setActivityPhase}
         onChangePanel={setMemoryPanel}
         onCloseAuditDetail={() => setAuditDetail(null)}
         onOpenAuditDetail={(seq) => void openAuditDetail(seq)}
@@ -639,7 +693,9 @@ function App() {
         bindingPoints={bindingPoints}
         deletingModelId={deletingModelId}
         directive={directive}
+        directiveError={summaryError}
         editingModelId={editingModelId}
+        helpError={helpError}
         helpCount={helpCount}
         helpRequests={helpRequests}
         injectDescription={injectDescription}
@@ -652,6 +708,7 @@ function App() {
         modelDesc={modelDesc}
         modelName={modelName}
         modelRoocodeWrapper={modelRoocodeWrapper}
+        modelError={modelsError}
         modelType={modelType}
         onChangePanel={setControlPanel}
         onDeleteModel={(model) => void deleteModel(model)}

@@ -2,6 +2,7 @@ import type React from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { InlineNotice } from '@/components/ui/inline-notice'
 import { Input } from '@/components/ui/input'
 import {
   Select,
@@ -37,6 +38,9 @@ const MODEL_CONNECTION_LABEL: Record<string, string> = {
 interface ControlPageProps {
   activePanel: ControlPanel
   directive: DirectivePayload | null
+  modelError?: string
+  helpError?: string
+  directiveError?: string
   helpRequests: TaskSummary[]
   helpCount: number
   resolvingTaskId: string
@@ -83,6 +87,9 @@ export function ControlPage(props: ControlPageProps) {
   const {
     activePanel,
     directive,
+    modelError,
+    helpError,
+    directiveError,
     helpRequests,
     helpCount,
     resolvingTaskId,
@@ -134,6 +141,15 @@ export function ControlPage(props: ControlPageProps) {
 
   return (
     <div className="space-y-4">
+      {activePanel === 'models' && modelError && (
+        <InlineNotice detail={modelError} title="Model registry could not refresh" tone="warning" />
+      )}
+      {activePanel === 'help' && helpError && (
+        <InlineNotice detail={helpError} title="Help center could not refresh" tone="warning" />
+      )}
+      {activePanel === 'directive' && directiveError && (
+        <InlineNotice detail={directiveError} title="Directive data could not refresh" tone="warning" />
+      )}
       <div className="flex flex-wrap gap-2">
         <Button size="sm" variant={activePanel === 'models' ? 'default' : 'outline'} onClick={() => onChangePanel('models')}>Models</Button>
         <Button size="sm" variant={activePanel === 'directive' ? 'default' : 'outline'} onClick={() => onChangePanel('directive')}>Directive</Button>

@@ -101,6 +101,15 @@ def serve_dashboard(
                 self._serve_json(_api_cycles(store))
             elif path == "/api/stats":
                 self._serve_json(_api_stats(store))
+            elif path == "/api/summary":
+                self._serve_json(_api_summary(
+                    store,
+                    directive_path,
+                    _state_dir,
+                    model_store=model_store,
+                    bootstrap_status_provider=bootstrap_status_provider,
+                    thread_store=thread_store,
+                ))
             elif path == "/api/help-center":
                 self._serve_json(_api_help_center(store))
             elif path == "/api/experiences":
@@ -294,6 +303,237 @@ def _api_cycles(store: TaskStore) -> dict:
 
 def _api_stats(store: TaskStore) -> dict:
     return store.get_stats()
+
+
+def _api_summary(
+    store: TaskStore,
+    directive_path: Path,
+    state_dir: Path,
+    *,
+    model_store: Optional[ModelRegistryStore] = None,
+    bootstrap_status_provider: Optional[Callable[[], dict]] = None,
+    thread_store=None,
+) -> dict:
+    tasks = store.list_tasks(limit=200)
+    task_rows = [_task_row(task) for task in tasks]
+    stats = _api_stats(store)
+    directive = _api_get_directive(directive_path)
+    bootstrap = _api_bootstrap_status(model_store, bootstrap_status_provider)
+    cycles = _api_cycles(store)["cycles"]
+    help_requests = _api_help_center(store)["requests"]
+    activity = _api_activity(state_dir, 120, "")["events"]
+    threads = _api_threads(thread_store)["threads"] if thread_store is not None else []
+    waiting_threads = [thread for thread in threads if thread.get("status") == "waiting_reply"]
+    recent_completions = len([task for task in task_rows if task.get("status") in {"completed", "human_resolved"}])
+    blocker_count = len(help_requests) + (1 if bootstrap.get("requires_setup") else 0)
+    active_task = next((task for task in task_rows if task.get("status") in {"running", "executing", "planning"}), None)
+    latest_cycle = cycles[0] if cycles else None
+    updated_at = (
+        next((e.get("timestamp") or e.get("ts") for e in reversed(activity) if e.get("timestamp") or e.get("ts")), "")
+        or (threads[0].get("updated_at") if threads else "")
+        or (task_rows[0].get("updated_at") if task_rows else "")
+        or (latest_cycle.get("completed_at") if latest_cycle else "")
+        or datetime.now(timezone.utc).isoformat()
+    )
+
+    summary_parts = [
+        (
+            f"The agent recently closed {recent_completions} task"
+            f"{'' if recent_completions == 1 else 's'}."
+            if recent_completions > 0
+            else "No recent completions are visible yet."
+        ),
+        (
+            f"It is currently focused on \"{active_task.get('title', '')}\"."
+            if active_task
+            else "It is not actively executing a task right now."
+        ),
+        (
+            f"{blocker_count + len(waiting_threads)} item"
+            f"{'' if blocker_count + len(waiting_threads) == 1 else 's'} may need operator attention."
+            if blocker_count + len(waiting_threads) > 0
+            else "There are no visible operator queues waiting right now."
+        ),
+    ]
+
+    notes = [
+        "Runtime is paused by directive." if directive.get("paused") else "Runtime is polling normally.",
+        bootstrap.get("message", "Bootstrap status unavailable."),
+        (
+            f"Latest cycle #{latest_cycle.get('id')}: "
+            f"{latest_cycle.get('discovered', 0)} discovered, "
+            f"{latest_cycle.get('executed', 0)} executed, "
+            f"{latest_cycle.get('failed', 0)} failed."
+            if latest_cycle
+            else "No cycle summary is available yet."
+        ),
+    ]
+
+    task_title_by_id = {task["id"]: task.get("title") or f"Task {task['id'][:8]}" for task in task_rows}
+
+    def build_change(event: dict) -> Optional[dict]:
+        event_name = str(event.get("event_name", ""))
+        task_id = str(event.get("task_id", ""))
+        timestamp = str(event.get("timestamp") or event.get("ts") or "")
+        detail = str(event.get("detail") or event.get("message") or "")
+        reasoning = str(event.get("reasoning") or "")
+        cycle_id = event.get("cycle_id")
+        related_parts = []
+        if task_id:
+          related_parts.append(f"task {task_id[:8]}")
+        if cycle_id:
+          related_parts.append(f"cycle-{cycle_id}")
+        related = " · ".join(related_parts) or "Execution state change"
+        task_title = task_title_by_id.get(task_id, f"Task {task_id[:8]}") if task_id else ""
+
+        if event_name == "task_completed" and task_id:
+            return {
+                "id": f"{event_name}-{task_id}-{timestamp}",
+                "label": "Completed",
+                "title": task_title,
+                "why": reasoning or "This work finished successfully and may unlock follow-up tasks.",
+                "timestamp": timestamp,
+                "meta": related,
+                "tone": "success",
+                "action": {"kind": "task", "label": "Open task", "taskId": task_id},
+            }
+        if event_name in {"task_failed", "task_needs_human"} and task_id:
+            return {
+                "id": f"{event_name}-{task_id}-{timestamp}",
+                "label": "Needs review" if event_name == "task_needs_human" else "Failed",
+                "title": task_title,
+                "why": reasoning or detail or "This task needs inspection before progress continues.",
+                "timestamp": timestamp,
+                "meta": related,
+                "tone": "warning",
+                "action": {"kind": "task", "label": "Review task", "taskId": task_id},
+            }
+        if event_name == "verification_completed" and event.get("success") is False and task_id:
+            return {
+                "id": f"{event_name}-{task_id}-{timestamp}",
+                "label": "Verification",
+                "title": task_title,
+                "why": reasoning or detail or "Verification did not pass and the evidence trail needs review.",
+                "timestamp": timestamp,
+                "meta": related,
+                "tone": "warning",
+                "action": {"kind": "task", "label": "Open verification", "taskId": task_id},
+            }
+        if event_name == "candidate_queued":
+            candidate_title = str(((event.get("data") or {}) if isinstance(event.get("data"), dict) else {}).get("title") or detail or "Discovery candidate queued")
+            return {
+                "id": f"{event_name}-{task_id or candidate_title}-{timestamp}",
+                "label": "Discovery",
+                "title": candidate_title,
+                "why": reasoning or "The agent promoted a discovered opportunity into the task queue.",
+                "timestamp": timestamp,
+                "meta": related if related != "Execution state change" else "Discovery queue update",
+                "tone": "default",
+                "action": {"kind": "page", "label": "Open discovery", "page": "discovery"},
+            }
+        if event_name == "cycle_completed":
+            return {
+                "id": f"{event_name}-{timestamp}",
+                "label": "Cycle",
+                "title": detail or "Cycle completed",
+                "why": reasoning or "The latest agent cycle finished and its results are ready for review.",
+                "timestamp": timestamp,
+                "meta": related if related != "Execution state change" else "Cycle lifecycle",
+                "tone": "default",
+                "action": {"kind": "page", "label": "Open work", "page": "work"},
+            }
+        return None
+
+    changes = []
+    for event in reversed(activity):
+        projected = build_change(event)
+        if projected:
+            changes.append(projected)
+        if len(changes) >= 6:
+            break
+
+    attention = []
+    if bootstrap.get("requires_setup"):
+        attention.append({
+            "id": "setup-required",
+            "label": "Setup",
+            "title": "Initialization still needs attention",
+            "detail": bootstrap.get("message", "Initialization is incomplete."),
+            "tone": "warning",
+            "action": {"kind": "page", "label": "Open control", "page": "control"},
+        })
+    for task in help_requests[:2]:
+        attention.append({
+            "id": f"help-{task['id']}",
+            "label": "Needs human",
+            "title": task.get("title", task["id"]),
+            "detail": task.get("human_help_request") or "This task is waiting for operator guidance.",
+            "tone": "warning",
+            "action": {"kind": "task", "label": "Review task", "taskId": task["id"]},
+        })
+    for thread in waiting_threads[:2]:
+        attention.append({
+            "id": f"thread-{thread['id']}",
+            "label": "Inbox",
+            "title": thread.get("title", thread["id"]),
+            "detail": "A human-agent thread is waiting for a reply or acknowledgement.",
+            "tone": "default",
+            "action": {"kind": "thread", "label": "Open thread", "threadId": thread["id"]},
+        })
+
+    destinations = [
+        {
+            "page": "work",
+            "label": "Work",
+            "description": "Inspect tasks, execution traces, and cycle outcomes.",
+            "countLabel": f"{len(task_rows):,} tasks",
+        },
+        {
+            "page": "inbox",
+            "label": "Inbox",
+            "description": "Continue async conversation with the agent.",
+            "countLabel": f"{len(waiting_threads):,} waiting",
+        },
+        {
+            "page": "discovery",
+            "label": "Discovery",
+            "description": "Review newly queued opportunities and source signals.",
+        },
+        {
+            "page": "memory",
+            "label": "Memory & Audit",
+            "description": "Read detailed evidence, activity, and LLM audit trails.",
+        },
+        {
+            "page": "control",
+            "label": "Control",
+            "description": "Adjust models, directives, and manual interventions.",
+            "countLabel": "setup pending" if bootstrap.get("requires_setup") else None,
+        },
+    ]
+
+    return {
+        "updated_at": updated_at,
+        "briefing": {
+            "eyebrow": "Review Briefing",
+            "title": "What changed since you last looked",
+            "summary": " ".join(summary_parts),
+            "statusLine": "Paused for review" if directive.get("paused") else "Live and ready for async review",
+            "updatedLabel": f"Updated {updated_at}",
+            "metrics": [
+                {"label": "Input tokens", "value": f"{int(stats.get('input_tokens') or 0):,}", "hint": "cumulative prompt volume"},
+                {"label": "Output tokens", "value": f"{int(stats.get('output_tokens') or 0):,}", "hint": "cumulative model output"},
+                {"label": "Recent completions", "value": f"{recent_completions:,}", "hint": "finished tasks in the current list"},
+                {"label": "Current blockers", "value": f"{blocker_count:,}", "hint": "human or setup issues"},
+            ],
+            "notes": notes,
+            "activeTask": active_task,
+            "latestCycle": latest_cycle,
+        },
+        "changes": changes,
+        "attention": attention,
+        "destinations": destinations,
+    }
 
 
 def _api_help_center(store: TaskStore) -> dict:

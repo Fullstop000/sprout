@@ -1,42 +1,49 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Newsreader:opsz,wght@6..72,500;6..72,600;6..72,700&display=swap');
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 :root {
-  color-scheme: dark;
+  color-scheme: light;
   --radius: 0.5rem;
-  
-  /* Dark theme (default) */
-  --background: 222 47% 6%;
-  --foreground: 213 27% 84%;
-  --card: 222 35% 10%;
-  --card-foreground: 213 27% 84%;
-  --popover: 222 35% 10%;
-  --popover-foreground: 213 27% 84%;
-  --primary: 217 91% 60%;
-  --primary-foreground: 222 47% 6%;
-  --secondary: 222 25% 18%;
-  --secondary-foreground: 213 27% 84%;
-  --muted: 222 25% 18%;
-  --muted-foreground: 215 16% 57%;
-  --accent: 222 25% 18%;
-  --accent-foreground: 213 27% 84%;
-  --destructive: 0 84% 60%;
-  --destructive-foreground: 213 27% 84%;
-  --border: 215 16% 30%;
-  --input: 215 16% 20%;
-  --ring: 217 91% 60%;
+
+  --background: 35 36% 95%;
+  --foreground: 24 20% 16%;
+  --card: 40 33% 98%;
+  --card-foreground: 24 20% 16%;
+  --popover: 40 33% 98%;
+  --popover-foreground: 24 20% 16%;
+  --primary: 27 21% 17%;
+  --primary-foreground: 40 30% 96%;
+  --secondary: 36 28% 90%;
+  --secondary-foreground: 24 20% 16%;
+  --muted: 36 26% 92%;
+  --muted-foreground: 28 12% 40%;
+  --accent: 42 37% 88%;
+  --accent-foreground: 24 20% 16%;
+  --destructive: 9 72% 48%;
+  --destructive-foreground: 40 30% 96%;
+  --border: 34 20% 82%;
+  --input: 34 20% 86%;
+  --ring: 37 33% 52%;
 }
 
 @layer base {
   * {
     @apply border-border;
   }
+  html {
+    @apply bg-background;
+  }
   body {
     @apply bg-background text-foreground;
+    font-family: "Instrument Sans", sans-serif;
     font-feature-settings: "rlig" 1, "calt" 1;
+  }
+
+  .font-serif {
+    font-family: "Newsreader", serif;
   }
 }
 
