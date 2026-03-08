@@ -1,8 +1,9 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
-from llm247_v2.__main__ import _bootstrap_status
+from llm247_v2.__main__ import _bootstrap_status, parse_args
 from llm247_v2.core.models import ModelType
 from llm247_v2.storage.model_registry import ModelRegistryStore
 
@@ -36,6 +37,13 @@ class TestBootstrapStatus(unittest.TestCase):
         self.assertTrue(status["ready"])
         self.assertFalse(status["requires_setup"])
         self.assertEqual(status["missing"], [])
+
+    def test_parse_args_accepts_api_key_file(self):
+        with mock.patch("sys.argv", ["llm247_v2", "--with-ui", "--api-key-file", "/tmp/api_key.yaml"]):
+            args = parse_args()
+
+        self.assertTrue(args.with_ui)
+        self.assertEqual(args.api_key_file, "/tmp/api_key.yaml")
 
 
 if __name__ == "__main__":
