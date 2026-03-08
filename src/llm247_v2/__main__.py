@@ -105,6 +105,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--with-ui", action="store_true", help="Run agent + dashboard together")
     p.add_argument("--workspace", default=None, help="Override workspace path")
     p.add_argument("--branch-prefix", default="agent", help="Git branch prefix (default: agent)")
+    p.add_argument("--api-key-file", default=None, help="Import models from one api_key.yaml file before startup")
     return p.parse_args()
 
 
@@ -132,6 +133,19 @@ def main() -> int:
     from llm247_v2.storage.model_registry import ModelRegistryStore
     store = TaskStore(db_path)
     model_store = ModelRegistryStore(models_db_path)
+
+    if args.api_key_file:
+        from llm247_v2.startup.api_key_import import import_api_key_file
+
+        api_key_file = Path(args.api_key_file).expanduser().resolve()
+        if not api_key_file.exists():
+            logger.error("API key file not found: %s", api_key_file)
+            model_store.close()
+            store.close()
+            return 2
+        imported_models = import_api_key_file(model_store, api_key_file)
+        logger.info("Imported %d model(s) from %s", len(imported_models), api_key_file)
+
     bootstrap = _bootstrap_status(model_store)
 
     if args.ui:

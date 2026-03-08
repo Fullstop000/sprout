@@ -1,4 +1,5 @@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { InlineNotice } from '@/components/ui/inline-notice'
 import { PhaseBadge } from '@/components/ui/phase-badge'
 
 import { eventBadgeLabel, eventBadgeVariant, eventDisplayName, formatActivityMessage, formatTime } from '../lib/dashboardView'
@@ -6,6 +7,8 @@ import type { DiscoveryEventEntry, DiscoveryPayload } from '../types/dashboard'
 
 interface DiscoveryPageProps {
   discovery: DiscoveryPayload | null
+  errorMessage?: string
+  onRetry?: () => void
 }
 
 function EventList({
@@ -94,7 +97,7 @@ function QueuedEventList({ events }: { events: DiscoveryEventEntry[] }) {
   )
 }
 
-export function DiscoveryPage({ discovery }: DiscoveryPageProps) {
+export function DiscoveryPage({ discovery, errorMessage, onRetry }: DiscoveryPageProps) {
   const snapshot = discovery ?? {
     strategy: null,
     latest_funnel: null,
@@ -107,6 +110,9 @@ export function DiscoveryPage({ discovery }: DiscoveryPageProps) {
 
   return (
     <div className="space-y-4">
+      {errorMessage && (
+        <InlineNotice detail={errorMessage} onAction={onRetry} title="Discovery view could not refresh" tone="warning" />
+      )}
       <div className="grid gap-4 xl:grid-cols-[1.05fr_1.35fr]">
         <Card className="border-border/60 bg-card/70">
           <CardHeader>

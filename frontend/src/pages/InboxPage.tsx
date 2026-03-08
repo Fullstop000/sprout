@@ -1,18 +1,15 @@
 import { useState } from 'react'
+import { Inbox, MessageSquareReply, MessagesSquare, Plus, RefreshCw, SquareCheckBig } from 'lucide-react'
+
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardHeader } from '@/components/ui/card'
-import { Textarea } from '@/components/ui/textarea'
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogFooter,
-} from '@/components/ui/dialog'
-import { StatusBadge } from '@/components/ui/status-badge'
 import { PriorityBadge } from '@/components/ui/priority-badge'
+import { StatusBadge } from '@/components/ui/status-badge'
+import { Textarea } from '@/components/ui/textarea'
+import { InlineNotice } from '@/components/ui/inline-notice'
+
 import { dashboardApiClient } from '../api/dashboardApi'
 import type { TaskDetail, TaskEvent, ThreadDetail, ThreadSummary } from '../types/dashboard'
 import { formatDateTime, formatTime } from '../lib/dashboardView'
@@ -27,6 +24,7 @@ const STATUS_LABELS: Record<string, { label: string; variant: 'default' | 'secon
 interface InboxPageProps {
   threads: ThreadSummary[]
   threadDetail: ThreadDetail | null
+  errorMessage?: string
   onSelectThread: (threadId: string) => void
   onReply: (threadId: string, body: string) => Promise<void>
   onCreateThread: (title: string, description: string) => Promise<void>
@@ -37,9 +35,14 @@ interface InboxPageProps {
   creating: boolean
 }
 
+function surfaceClass(): string {
+  return 'rounded-[1.75rem] border border-stone-200 bg-white/88 shadow-[0_20px_50px_rgba(53,44,34,0.06)]'
+}
+
 export function InboxPage({
   threads,
   threadDetail,
+  errorMessage,
   onSelectThread,
   onReply,
   onCreateThread,
@@ -122,336 +125,313 @@ export function InboxPage({
   }
 
   return (
-    <div className="flex gap-4 min-h-0 h-full">
-      {/* Thread list */}
-      <div className="w-80 shrink-0 flex flex-col gap-2 min-h-0">
-        {/* Toolbar */}
-        <div className="flex items-center justify-between gap-2 shrink-0">
-          <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
-            Inbox
+    <div className="space-y-5">
+      {errorMessage && (
+        <InlineNotice
+          detail={errorMessage}
+          onAction={onRefresh}
+          title="Inbox is temporarily unavailable"
+          tone="warning"
+        />
+      )}
+      <section className="flex flex-wrap items-start justify-between gap-4 rounded-[1.5rem] border border-stone-200 bg-[linear-gradient(180deg,rgba(249,246,239,0.92),rgba(255,255,255,0.92))] px-5 py-5 shadow-[0_16px_40px_rgba(53,44,34,0.05)]">
+        <div className="space-y-2">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-stone-500">Inbox</p>
+          <h3 className="font-serif text-3xl tracking-[-0.03em] text-stone-950">Async threads with the agent</h3>
+          <p className="max-w-3xl text-sm leading-6 text-stone-600">
+            Use this space for low-frequency human-agent exchange. The list is compact, the thread view is readable, and linked task evidence stays one click away.
           </p>
-          <div className="flex gap-1.5">
-            <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={onRefresh}>
-              Refresh
-            </Button>
-            <Button size="sm" className="h-7 px-2 text-xs" onClick={() => setShowNewForm((v) => !v)}>
-              + New
-            </Button>
-          </div>
         </div>
 
-        {/* New thread form */}
-        {showNewForm && (
-          <Card className="border-border/60 bg-card/80 shrink-0">
-            <CardContent className="space-y-2 p-3">
-              <Input
-                placeholder="Title"
-                value={newTitle}
-                onChange={(e) => setNewTitle(e.target.value)}
-                className="h-8 text-sm"
-              />
-              <Textarea
-                placeholder="Description (optional)"
-                value={newDescription}
-                onChange={(e) => setNewDescription(e.target.value)}
-                rows={2}
-                className="text-sm"
-              />
-              <div className="flex gap-1.5">
-                <Button size="sm" className="h-7 px-3 text-xs" onClick={() => void handleCreate()} disabled={creating || !newTitle.trim()}>
-                  {creating ? 'Sending…' : 'Send'}
-                </Button>
-                <Button size="sm" variant="outline" className="h-7 px-3 text-xs" onClick={() => setShowNewForm(false)}>
-                  Cancel
-                </Button>
-              </div>
-            </CardContent>
-          </Card>
-        )}
-
-        {/* Batch action bar */}
-        {selected.size > 0 && (
-          <div className="flex items-center justify-between rounded-lg bg-muted/60 border border-border/40 px-3 py-1.5 shrink-0">
-            <span className="text-xs text-muted-foreground">{selected.size} selected</span>
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-6 px-2 text-xs"
-              onClick={() => void handleBulkClose()}
-            >
-              Close {selected.size}
-            </Button>
-          </div>
-        )}
-
-        {/* Active threads */}
-        <div className="flex-1 min-h-0 overflow-y-auto space-y-px">
-          {threads.length === 0 && (
-            <p className="text-sm text-muted-foreground py-6 text-center">No threads yet.</p>
-          )}
-
-          {active.length > 0 && (
-            <div className="space-y-px">
-              <div className="flex items-center gap-2 px-2 pb-1">
-                <input
-                  type="checkbox"
-                  checked={allSelected}
-                  onChange={toggleSelectAll}
-                  className="h-3.5 w-3.5 rounded border-border accent-primary cursor-pointer"
-                />
-                <span className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
-                  Active · {active.length}
-                </span>
-              </div>
-              {active.map((t) => (
-                <ThreadRow
-                  key={t.id}
-                  thread={t}
-                  isSelected={threadDetail?.thread.id === t.id}
-                  isChecked={selected.has(t.id)}
-                  onCheck={() => toggleSelect(t.id)}
-                  onClick={() => onSelectThread(t.id)}
-                />
-              ))}
-            </div>
-          )}
-
-          {closed.length > 0 && (
-            <div className="space-y-px mt-3">
-              <div className="px-2 pb-1">
-                <span className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
-                  Closed · {closed.length}
-                </span>
-              </div>
-              {closed.map((t) => (
-                <ThreadRow
-                  key={t.id}
-                  thread={t}
-                  isSelected={threadDetail?.thread.id === t.id}
-                  isChecked={false}
-                  onCheck={() => {}}
-                  onClick={() => onSelectThread(t.id)}
-                />
-              ))}
-            </div>
-          )}
+        <div className="flex flex-wrap gap-2">
+          <Button className="rounded-full border-stone-200 bg-white text-stone-700 hover:bg-stone-50" size="sm" variant="outline" onClick={onRefresh}>
+            <RefreshCw className="h-4 w-4" />
+            Refresh
+          </Button>
+          <Button className="rounded-full bg-stone-950 text-stone-50 hover:bg-stone-800" size="sm" onClick={() => setShowNewForm((v) => !v)}>
+            <Plus className="h-4 w-4" />
+            New thread
+          </Button>
         </div>
-      </div>
+      </section>
 
-      {/* Thread detail */}
-      <div className="flex-1 min-w-0 flex flex-col min-h-0">
-        {!threadDetail ? (
-          <Card className="border-border/60 bg-card/80 flex-1 flex items-center justify-center">
-            <p className="text-sm text-muted-foreground">Select a thread to view the conversation.</p>
-          </Card>
-        ) : (
-          <Card className="border-border/60 bg-card/80 flex flex-col flex-1 min-h-0">
-            <CardHeader className="flex flex-row items-start justify-between gap-4 pb-3 shrink-0">
-              <div className="min-w-0">
-                <p className="font-semibold text-foreground truncate">{threadDetail.thread.title}</p>
-                <p className="text-xs text-muted-foreground mt-0.5">
-                  Created by {threadDetail.thread.created_by} · {formatDateTime(threadDetail.thread.created_at)}
+      <div className="grid min-h-0 gap-5 xl:grid-cols-[360px_minmax(0,1fr)]">
+        <aside className={`${surfaceClass()} min-h-0 overflow-hidden`}>
+          <div className="space-y-4 px-5 py-5">
+            <div className="flex items-center justify-between gap-3">
+              <div className="space-y-1">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-stone-500">Thread List</p>
+                <p className="text-sm text-stone-600">{active.length} active · {closed.length} closed</p>
+              </div>
+              {selected.size > 0 && (
+                <Button className="rounded-full border-stone-200 bg-white text-stone-700 hover:bg-stone-50" size="sm" variant="outline" onClick={() => void handleBulkClose()}>
+                  Close {selected.size}
+                </Button>
+              )}
+            </div>
+
+            {showNewForm && (
+              <div className="rounded-[1.25rem] border border-stone-200 bg-stone-50/80 p-4">
+                <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-stone-500">
+                  <MessagesSquare className="h-4 w-4" />
+                  Start new thread
+                </div>
+                <div className="mt-4 space-y-3">
+                  <Input
+                    placeholder="Title"
+                    value={newTitle}
+                    onChange={(e) => setNewTitle(e.target.value)}
+                    className="border-stone-200 bg-white text-stone-800"
+                  />
+                  <Textarea
+                    placeholder="Description (optional)"
+                    value={newDescription}
+                    onChange={(e) => setNewDescription(e.target.value)}
+                    rows={3}
+                    className="border-stone-200 bg-white text-stone-800"
+                  />
+                  <div className="flex gap-2">
+                    <Button className="rounded-full bg-stone-950 text-stone-50 hover:bg-stone-800" size="sm" onClick={() => void handleCreate()} disabled={creating || !newTitle.trim()}>
+                      {creating ? 'Sending…' : 'Send'}
+                    </Button>
+                    <Button className="rounded-full border-stone-200 bg-white text-stone-700 hover:bg-stone-50" size="sm" variant="outline" onClick={() => setShowNewForm(false)}>
+                      Cancel
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {active.length > 0 && (
+              <div className="space-y-2">
+                <div className="flex items-center gap-2 px-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-stone-500">
+                  <input
+                    type="checkbox"
+                    checked={allSelected}
+                    onChange={toggleSelectAll}
+                    className="h-3.5 w-3.5 rounded border-stone-300 accent-[hsl(var(--primary))] cursor-pointer"
+                  />
+                  <SquareCheckBig className="h-4 w-4" />
+                  Active threads
+                </div>
+                <div className="space-y-2">
+                  {active.map((thread) => (
+                    <ThreadRow
+                      key={thread.id}
+                      thread={thread}
+                      isSelected={threadDetail?.thread.id === thread.id}
+                      isChecked={selected.has(thread.id)}
+                      onCheck={() => toggleSelect(thread.id)}
+                      onClick={() => onSelectThread(thread.id)}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {closed.length > 0 && (
+              <div className="space-y-2 border-t border-stone-200 pt-4">
+                <p className="px-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-stone-500">Closed threads</p>
+                <div className="space-y-2">
+                  {closed.map((thread) => (
+                    <ThreadRow
+                      key={thread.id}
+                      thread={thread}
+                      isSelected={threadDetail?.thread.id === thread.id}
+                      isChecked={false}
+                      onCheck={() => {}}
+                      onClick={() => onSelectThread(thread.id)}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {threads.length === 0 && (
+              <div className="rounded-[1.25rem] border border-dashed border-stone-300 bg-stone-50/80 p-6 text-center text-sm text-stone-500">
+                No threads yet.
+              </div>
+            )}
+          </div>
+        </aside>
+
+        <section className={`${surfaceClass()} min-h-0 overflow-hidden`}>
+          {!threadDetail ? (
+            <div className="flex h-full min-h-[420px] items-center justify-center px-8 py-12 text-center">
+              <div className="max-w-md space-y-3">
+                <Inbox className="mx-auto h-8 w-8 text-stone-400" />
+                <h4 className="font-serif text-3xl tracking-[-0.03em] text-stone-950">Select a thread to read the exchange</h4>
+                <p className="text-sm leading-6 text-stone-600">
+                  The conversation pane will show the thread, linked tasks, and reply actions once a thread is selected.
                 </p>
-                {threadDetail.task_ids.length > 0 && (
-                  <p className="text-xs text-muted-foreground mt-1 flex flex-wrap items-center gap-1">
-                    <span>Tasks:</span>
-                    {threadDetail.task_ids.map((id) => (
-                      <button
-                        key={id}
-                        type="button"
-                        onClick={() => void openTaskModal(id)}
-                        disabled={Boolean(loadingTaskId)}
-                        className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-foreground hover:bg-primary hover:text-primary-foreground transition disabled:opacity-50"
-                      >
-                        {loadingTaskId === id ? '…' : id}
-                      </button>
-                    ))}
-                  </p>
-                )}
               </div>
-              <Badge variant={STATUS_LABELS[threadDetail.thread.status]?.variant ?? 'outline'}>
-                {STATUS_LABELS[threadDetail.thread.status]?.label ?? threadDetail.thread.status}
-              </Badge>
-            </CardHeader>
+            </div>
+          ) : (
+            <div className="flex h-full min-h-[520px] flex-col">
+              <div className="flex flex-col gap-4 border-b border-stone-200 bg-[linear-gradient(180deg,rgba(249,246,239,0.92),rgba(255,255,255,0.92))] px-6 py-5 md:flex-row md:items-start md:justify-between">
+                <div className="min-w-0 space-y-2">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-stone-500">Conversation</p>
+                  <h4 className="truncate font-serif text-3xl tracking-[-0.03em] text-stone-950">{threadDetail.thread.title}</h4>
+                  <p className="text-sm text-stone-600">
+                    Created by {threadDetail.thread.created_by} · {formatDateTime(threadDetail.thread.created_at)}
+                  </p>
+                  {threadDetail.task_ids.length > 0 && (
+                    <div className="flex flex-wrap items-center gap-2 pt-1">
+                      <span className="text-xs uppercase tracking-[0.16em] text-stone-500">Linked tasks</span>
+                      {threadDetail.task_ids.map((id) => (
+                        <button
+                          key={id}
+                          type="button"
+                          onClick={() => void openTaskModal(id)}
+                          disabled={Boolean(loadingTaskId)}
+                          className="rounded-full bg-stone-100 px-3 py-1 font-mono text-xs text-stone-700 transition hover:bg-stone-900 hover:text-stone-50 disabled:opacity-50"
+                        >
+                          {loadingTaskId === id ? '…' : id}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <Badge className="self-start border-stone-200 bg-white text-stone-700" variant={STATUS_LABELS[threadDetail.thread.status]?.variant ?? 'outline'}>
+                  {STATUS_LABELS[threadDetail.thread.status]?.label ?? threadDetail.thread.status}
+                </Badge>
+              </div>
 
-            <CardContent className="flex flex-col flex-1 min-h-0 gap-3 pt-0">
-              {/* Messages */}
-              <div className="flex-1 min-h-0 overflow-y-auto space-y-3 pr-1">
+              <div className="flex-1 space-y-4 overflow-y-auto px-6 py-6">
                 {threadDetail.messages.length === 0 && (
-                  <p className="text-sm text-muted-foreground">No messages yet.</p>
+                  <p className="text-sm text-stone-500">No messages yet.</p>
                 )}
-                {threadDetail.messages.map((m) => (
+                {threadDetail.messages.map((message) => (
                   <div
-                    key={m.id}
-                    className={`flex ${m.role === 'human' ? 'justify-end' : 'justify-start'}`}
+                    key={message.id}
+                    className={`flex ${message.role === 'human' ? 'justify-end' : 'justify-start'}`}
                   >
                     <div
-                      className={`max-w-[80%] rounded-2xl px-4 py-2.5 text-sm whitespace-pre-wrap ${
-                        m.role === 'human'
-                          ? 'bg-primary text-primary-foreground rounded-br-sm'
-                          : 'bg-muted text-foreground rounded-bl-sm'
+                      className={`max-w-[80%] rounded-[1.5rem] px-4 py-3 text-sm leading-6 whitespace-pre-wrap ${
+                        message.role === 'human'
+                          ? 'bg-stone-950 text-stone-50'
+                          : 'border border-stone-200 bg-stone-50 text-stone-800'
                       }`}
                     >
-                      <p>{m.body}</p>
-                      <p className={`text-[10px] mt-1 ${m.role === 'human' ? 'text-primary-foreground/60' : 'text-muted-foreground'}`}>
-                        {m.role === 'human' ? 'You' : 'Sprout'} · {formatDateTime(m.created_at)}
+                      <p>{message.body}</p>
+                      <p className={`mt-2 text-[10px] uppercase tracking-[0.16em] ${message.role === 'human' ? 'text-stone-300' : 'text-stone-500'}`}>
+                        {message.role === 'human' ? 'You' : 'Sprout'} · {formatDateTime(message.created_at)}
                       </p>
                     </div>
                   </div>
                 ))}
               </div>
 
-              {/* Reply + action area */}
               {threadDetail.thread.status !== 'closed' && (
-                <div className="shrink-0 space-y-2 pt-2 border-t border-border/40">
-                  {/* Inline close form */}
+                <div className="space-y-3 border-t border-stone-200 px-6 py-5">
                   {showCloseForm && (
-                    <div className="rounded-xl border border-destructive/30 bg-destructive/5 p-3 space-y-2">
-                      <p className="text-xs font-semibold text-destructive uppercase tracking-wide">Close thread</p>
+                    <div className="rounded-[1.25rem] border border-rose-200 bg-rose-50/90 p-4">
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-rose-700">Close thread</p>
                       <Textarea
                         placeholder="Reason (optional)"
                         value={closeReason}
                         onChange={(e) => setCloseReason(e.target.value)}
                         rows={2}
-                        className="text-sm"
+                        className="mt-3 border-rose-200 bg-white text-stone-800"
                       />
-                      <div className="flex gap-1.5">
-                        <Button
-                          size="sm"
-                          variant="destructive"
-                          className="h-7 px-3 text-xs"
-                          onClick={() => void handleClose()}
-                          disabled={closing}
-                        >
+                      <div className="mt-3 flex gap-2">
+                        <Button className="rounded-full bg-rose-700 text-rose-50 hover:bg-rose-800" size="sm" onClick={() => void handleClose()} disabled={closing}>
                           {closing ? 'Closing…' : 'Confirm close'}
                         </Button>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          className="h-7 px-3 text-xs"
-                          onClick={() => { setShowCloseForm(false); setCloseReason('') }}
-                        >
+                        <Button className="rounded-full border-stone-200 bg-white text-stone-700 hover:bg-stone-50" size="sm" variant="outline" onClick={() => { setShowCloseForm(false); setCloseReason('') }}>
                           Cancel
                         </Button>
                       </div>
                     </div>
                   )}
 
-                  {/* Textarea + [Close | Send] button group */}
-                  <div className="flex gap-2">
+                  <div className="flex gap-3">
                     <Textarea
                       placeholder="Type your reply…"
                       value={replyText}
                       onChange={(e) => setReplyText(e.target.value)}
-                      rows={2}
-                      className="flex-1 text-sm"
+                      rows={3}
+                      className="flex-1 border-stone-200 bg-white text-stone-800"
                       onKeyDown={(e) => {
                         if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) void handleReply()
                       }}
                     />
-                    {/* Button group */}
-                    <div className="flex flex-col gap-0 self-end rounded-md overflow-hidden border border-border/60 shrink-0">
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="rounded-none border-b border-border/60 h-8 px-3 text-xs text-destructive hover:bg-destructive/10 hover:text-destructive"
-                        onClick={() => setShowCloseForm((v) => !v)}
-                      >
+                    <div className="flex shrink-0 flex-col gap-2 self-end">
+                      <Button className="rounded-full border-stone-200 bg-white text-rose-700 hover:bg-rose-50" size="sm" variant="outline" onClick={() => setShowCloseForm((v) => !v)}>
                         Close
                       </Button>
-                      <Button
-                        size="sm"
-                        className="rounded-none h-8 px-3 text-xs"
-                        onClick={() => void handleReply()}
-                        disabled={replying || !replyText.trim()}
-                      >
-                        {replying ? '…' : 'Send'}
+                      <Button className="rounded-full bg-stone-950 text-stone-50 hover:bg-stone-800" size="sm" onClick={() => void handleReply()} disabled={replying || !replyText.trim()}>
+                        <MessageSquareReply className="h-4 w-4" />
+                        {replying ? 'Sending…' : 'Send'}
                       </Button>
                     </div>
                   </div>
                 </div>
               )}
-            </CardContent>
-          </Card>
-        )}
+            </div>
+          )}
+        </section>
       </div>
 
-      {/* Task detail modal */}
       {taskModal && (
         <Dialog open onOpenChange={(open) => { if (!open) setTaskModal(null) }}>
-          <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto">
+          <DialogContent className="max-h-[85vh] max-w-3xl overflow-y-auto border-stone-200 bg-[#faf7f2]">
             <DialogHeader>
-              <DialogTitle className="pr-6">{taskModal.detail.title}</DialogTitle>
+              <DialogTitle className="pr-6 font-serif text-2xl tracking-[-0.03em] text-stone-950">{taskModal.detail.title}</DialogTitle>
             </DialogHeader>
-            <div className="space-y-4 text-sm">
-              <div className="flex flex-wrap gap-3 text-muted-foreground">
+            <div className="space-y-5 text-sm">
+              <div className="flex flex-wrap gap-3 text-stone-600">
                 <span>Status: <StatusBadge status={taskModal.detail.status} /></span>
                 <span>Priority: <PriorityBadge priority={taskModal.detail.priority} /></span>
-                <span>Source: <code className="rounded bg-muted px-1.5 py-0.5 text-xs">{taskModal.detail.source}</code></span>
+                <span>Source: <code className="rounded-full bg-stone-100 px-2 py-1 text-xs text-stone-700">{taskModal.detail.source}</code></span>
                 <span>Created: <span className="font-mono text-xs">{formatDateTime(taskModal.detail.created_at)}</span></span>
                 <span>Updated: <span className="font-mono text-xs">{formatDateTime(taskModal.detail.updated_at)}</span></span>
               </div>
 
               {taskModal.detail.description && (
                 <section>
-                  <h3 className="mb-1.5 text-xs font-semibold uppercase text-muted-foreground">Description</h3>
-                  <p className="leading-relaxed">{taskModal.detail.description}</p>
+                  <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-stone-500">Description</h3>
+                  <p className="leading-7 text-stone-700">{taskModal.detail.description}</p>
                 </section>
               )}
 
               {taskModal.detail.human_help_request && (
                 <section>
-                  <h3 className="mb-1.5 text-xs font-semibold uppercase text-amber-400">Human Help Request</h3>
-                  <pre className="overflow-auto rounded-md border border-amber-500/20 bg-amber-500/5 p-3 text-xs text-amber-50/90">{taskModal.detail.human_help_request}</pre>
+                  <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-amber-700">Human Help Request</h3>
+                  <pre className="overflow-auto rounded-2xl border border-amber-200 bg-amber-50/90 p-4 text-xs text-amber-900">{taskModal.detail.human_help_request}</pre>
                 </section>
               )}
 
               {taskModal.detail.error_message && (
                 <section>
-                  <h3 className="mb-1.5 text-xs font-semibold uppercase text-destructive">Error</h3>
-                  <pre className="overflow-auto rounded-md border border-destructive/20 bg-destructive/5 p-3 text-xs text-destructive">{taskModal.detail.error_message}</pre>
+                  <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-rose-700">Error</h3>
+                  <pre className="overflow-auto rounded-2xl border border-rose-200 bg-rose-50/90 p-4 text-xs text-rose-800">{taskModal.detail.error_message}</pre>
                 </section>
               )}
 
               {taskModal.detail.plan && (
                 <section>
-                  <h3 className="mb-1.5 text-xs font-semibold uppercase text-muted-foreground">Execution Plan</h3>
-                  <pre className="overflow-auto rounded-md bg-muted p-3 text-xs">{taskModal.detail.plan}</pre>
+                  <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-stone-500">Execution Plan</h3>
+                  <pre className="overflow-auto rounded-2xl bg-stone-100 p-4 text-xs text-stone-800">{taskModal.detail.plan}</pre>
                 </section>
               )}
 
               {taskModal.detail.execution_log && (
                 <section>
-                  <h3 className="mb-1.5 text-xs font-semibold uppercase text-muted-foreground">Execution Log</h3>
-                  <pre className="overflow-auto rounded-md bg-muted p-3 text-xs">{taskModal.detail.execution_log}</pre>
-                </section>
-              )}
-
-              {taskModal.detail.verification_result && (
-                <section>
-                  <h3 className="mb-1.5 text-xs font-semibold uppercase text-muted-foreground">Verification</h3>
-                  <pre className="overflow-auto rounded-md bg-muted p-3 text-xs">{taskModal.detail.verification_result}</pre>
-                </section>
-              )}
-
-              {taskModal.detail.whats_learned && (
-                <section>
-                  <h3 className="mb-1.5 text-xs font-semibold uppercase text-muted-foreground">What Was Learned</h3>
-                  <pre className="overflow-auto rounded-md bg-muted p-3 text-xs">{taskModal.detail.whats_learned}</pre>
+                  <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-stone-500">Execution Log</h3>
+                  <pre className="overflow-auto rounded-2xl bg-stone-100 p-4 text-xs text-stone-800">{taskModal.detail.execution_log}</pre>
                 </section>
               )}
 
               {taskModal.events.length > 0 && (
                 <section>
-                  <h3 className="mb-1.5 text-xs font-semibold uppercase text-muted-foreground">
-                    Events <span className="rounded-full bg-muted px-2 py-0.5">{taskModal.events.length}</span>
-                  </h3>
-                  <div className="space-y-1.5">
-                    {taskModal.events.map((ev, idx) => (
-                      <div key={idx} className="flex items-start gap-3 border-l-2 border-muted pl-3">
-                        <span className="font-mono text-xs font-semibold text-primary">{ev.event_type}</span>
-                        <span className="font-mono text-xs text-muted-foreground">{formatTime(ev.created_at)}</span>
-                        {ev.detail && <span className="text-xs text-muted-foreground">{ev.detail}</span>}
+                  <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-stone-500">Events</h3>
+                  <div className="space-y-2">
+                    {taskModal.events.map((event, idx) => (
+                      <div key={idx} className="flex items-start gap-3 border-l-2 border-stone-200 pl-3">
+                        <span className="font-mono text-xs font-semibold text-stone-700">{event.event_type}</span>
+                        <span className="font-mono text-xs text-stone-500">{formatTime(event.created_at)}</span>
+                        {event.detail && <span className="text-xs text-stone-600">{event.detail}</span>}
                       </div>
                     ))}
                   </div>
@@ -481,37 +461,32 @@ function ThreadRow({
 }) {
   const statusInfo = STATUS_LABELS[thread.status] ?? { label: thread.status, variant: 'outline' as const }
   const isClosed = thread.status === 'closed'
+
   return (
-    <div
-      className={`group flex items-center gap-1.5 rounded-xl px-1.5 py-0.5 transition ${
-        isSelected ? 'bg-primary/10' : 'hover:bg-muted/50'
-      }`}
-    >
+    <div className={`flex items-center gap-2 rounded-[1.25rem] border px-3 py-3 transition ${isSelected ? 'border-stone-900 bg-stone-900 text-stone-50' : 'border-stone-200 bg-white hover:bg-stone-50'}`}>
       {!isClosed ? (
         <input
           type="checkbox"
           checked={isChecked}
           onChange={(e) => { e.stopPropagation(); onCheck() }}
           onClick={(e) => e.stopPropagation()}
-          className="h-3.5 w-3.5 shrink-0 rounded border-border accent-primary cursor-pointer"
+          className="h-3.5 w-3.5 shrink-0 rounded border-stone-300 accent-[hsl(var(--primary))] cursor-pointer"
         />
       ) : (
         <div className="w-3.5 shrink-0" />
       )}
       <button
         type="button"
-        className="flex-1 min-w-0 rounded-lg px-2 py-2 text-left"
+        className="min-w-0 flex-1 text-left"
         onClick={onClick}
       >
         <div className="flex items-start justify-between gap-2">
-          <p className={`text-sm font-medium truncate flex-1 ${isSelected ? 'text-primary' : 'text-foreground'}`}>
-            {thread.title}
-          </p>
-          <Badge variant={statusInfo.variant} className="shrink-0 text-[10px]">
+          <p className={`truncate text-sm font-medium ${isSelected ? 'text-stone-50' : 'text-stone-900'}`}>{thread.title}</p>
+          <Badge className={isSelected ? 'border-stone-700 bg-stone-800 text-stone-100' : 'border-stone-200 bg-stone-100 text-stone-700'} variant={statusInfo.variant}>
             {statusInfo.label}
           </Badge>
         </div>
-        <p className="text-xs mt-0.5 text-muted-foreground">
+        <p className={`mt-1 text-xs ${isSelected ? 'text-stone-300' : 'text-stone-500'}`}>
           {thread.created_by} · {formatDateTime(thread.updated_at)}
         </p>
       </button>

@@ -2,7 +2,7 @@
 
 > Module: `src/llm247_v2/dashboard/`
 > File: `server.py`
-> Last updated: 2026-03-05
+> Last updated: 2026-03-09
 
 ## Purpose
 
@@ -108,6 +108,13 @@ The frontend is a Vite/React build. Build artifacts live in `frontend/dist/`. Th
 When `/api/bootstrap-status` reports `requires_setup=true`, the frontend should
 guide the operator to the `Models` page and keep the initialization call-to-action
 visible until a default `llm` model has been registered.
+
+Startup now also supports one CLI-assisted bootstrap path: `scripts/start_v2.sh`
+can forward an `api_key.yaml` file into `python -m llm247_v2 --api-key-file ...`,
+which imports matching model definitions into `.llm247_v2/models.db` before
+bootstrap readiness checks run. This is intended as a narrow convenience import
+for simple provider files, not as a second long-term source of truth outside the
+registry.
 
 If `frontend/dist/` doesn't exist, the server falls back to a minimal HTML page with build instructions.
 

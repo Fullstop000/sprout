@@ -14,12 +14,12 @@ usage() {
 Sprout Agent V2 — Autonomous 24/7 Engineering Agent
 
 Usage:
-  ./scripts/start_v2.sh agent        Run agent loop (24/7 autonomous mode)
-  ./scripts/start_v2.sh ui           Run dashboard UI only          [production]
-  ./scripts/start_v2.sh both         Run agent + dashboard          [production]
-  ./scripts/start_v2.sh ui-dev       Run dashboard UI with hot reload [dev]
-  ./scripts/start_v2.sh both-dev     Run agent + dashboard with hot reload [dev]
-  ./scripts/start_v2.sh once         Run a single agent cycle
+  ./scripts/start_v2.sh agent [api_key.yaml]    Run agent loop (24/7 autonomous mode)
+  ./scripts/start_v2.sh ui [api_key.yaml]       Run dashboard UI only          [production]
+  ./scripts/start_v2.sh both [api_key.yaml]     Run agent + dashboard          [production]
+  ./scripts/start_v2.sh ui-dev [api_key.yaml]   Run dashboard UI with hot reload [dev]
+  ./scripts/start_v2.sh both-dev [api_key.yaml] Run agent + dashboard with hot reload [dev]
+  ./scripts/start_v2.sh once [api_key.yaml]     Run a single agent cycle
   ./scripts/start_v2.sh test         Run V2 test suite
 
 Production vs Dev:
@@ -45,6 +45,9 @@ Options (via environment):
   FORCE_FRONTEND_BUILD     Force rebuilding frontend before ui/both (1=true)
   SKIP_FRONTEND_BUILD      Skip auto frontend build check for ui/both (1=true)
   NPM_CACHE_DIR            npm cache path (default: /tmp/.npm-cache)
+
+Optional positional file:
+  api_key.yaml             Import model credentials into the V2 model registry before startup
 
 Control:
   Edit .llm247_v2/directive.json to control agent behavior, or
@@ -128,22 +131,33 @@ cleanup_vite() {
 
 # ── Commands ─────────────────────────────────────────────────────────
 
-case "${1:-help}" in
+COMMAND="${1:-help}"
+API_KEY_FILE="${2:-}"
+API_KEY_ARGS=()
+if [[ -n "$API_KEY_FILE" ]]; then
+    if [[ ! -f "$API_KEY_FILE" ]]; then
+        echo "error: api key file not found: $API_KEY_FILE" >&2
+        exit 1
+    fi
+    API_KEY_ARGS=(--api-key-file "$API_KEY_FILE")
+fi
+
+case "$COMMAND" in
     agent)
         echo "Starting Sprout Agent V2..."
-        PYTHONPATH=src exec python3 -m llm247_v2
+        PYTHONPATH=src exec python3 -m llm247_v2 "${API_KEY_ARGS[@]}"
         ;;
 
     ui)
         ensure_frontend_assets
         echo "Starting Dashboard UI (production) on http://127.0.0.1:${UI_PORT:-8787}"
-        PYTHONPATH=src exec python3 -m llm247_v2 --ui --ui-port "${UI_PORT:-8787}"
+        PYTHONPATH=src exec python3 -m llm247_v2 --ui --ui-port "${UI_PORT:-8787}" "${API_KEY_ARGS[@]}"
         ;;
 
     both)
         ensure_frontend_assets
         echo "Starting Agent + Dashboard (production) on http://127.0.0.1:${UI_PORT:-8787}"
-        PYTHONPATH=src exec python3 -m llm247_v2 --with-ui --ui-port "${UI_PORT:-8787}"
+        PYTHONPATH=src exec python3 -m llm247_v2 --with-ui --ui-port "${UI_PORT:-8787}" "${API_KEY_ARGS[@]}"
         ;;
 
     ui-dev)
@@ -153,7 +167,7 @@ case "${1:-help}" in
 
         # Start Python API backend (skips frontend serving; Vite handles that)
         echo "Starting Python API backend on http://127.0.0.1:${UI_PORT:-8787}"
-        PYTHONPATH=src python3 -m llm247_v2 --ui --ui-port "${UI_PORT:-8787}" &
+        PYTHONPATH=src python3 -m llm247_v2 --ui --ui-port "${UI_PORT:-8787}" "${API_KEY_ARGS[@]}" &
         BACKEND_PID=$!
 
         # Give backend a moment to bind the port
@@ -178,7 +192,7 @@ case "${1:-help}" in
 
         # Start agent + API backend
         echo "Starting Agent + API backend on http://127.0.0.1:${UI_PORT:-8787}"
-        PYTHONPATH=src python3 -m llm247_v2 --with-ui --ui-port "${UI_PORT:-8787}" &
+        PYTHONPATH=src python3 -m llm247_v2 --with-ui --ui-port "${UI_PORT:-8787}" "${API_KEY_ARGS[@]}" &
         BACKEND_PID=$!
 
         sleep 1
@@ -196,7 +210,7 @@ case "${1:-help}" in
 
     once)
         echo "Running single agent cycle..."
-        PYTHONPATH=src exec python3 -m llm247_v2 --once
+        PYTHONPATH=src exec python3 -m llm247_v2 --once "${API_KEY_ARGS[@]}"
         ;;
 
     test)
@@ -209,7 +223,7 @@ case "${1:-help}" in
         ;;
 
     *)
-        echo "Unknown command: $1"
+        echo "Unknown command: $COMMAND"
         usage
         exit 1
         ;;

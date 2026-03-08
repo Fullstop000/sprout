@@ -6,11 +6,11 @@ interface PriorityBadgeProps {
 }
 
 const priorityClasses: Record<number, string> = {
-  1: 'text-red-400',
-  2: 'text-yellow-400',
-  3: 'text-gray-400',
-  4: 'text-gray-500',
-  5: 'text-gray-600',
+  1: 'border-rose-200 bg-rose-50 text-rose-800',
+  2: 'border-amber-200 bg-amber-50 text-amber-800',
+  3: 'border-stone-200 bg-stone-100 text-stone-700',
+  4: 'border-stone-200 bg-stone-100 text-stone-600',
+  5: 'border-stone-200 bg-stone-100 text-stone-500',
 }
 
 export function PriorityBadge({ priority, className }: PriorityBadgeProps) {
@@ -19,7 +19,7 @@ export function PriorityBadge({ priority, className }: PriorityBadgeProps) {
   return (
     <span
       className={cn(
-        'font-mono text-sm font-semibold',
+        'inline-flex rounded-full border px-2.5 py-1 font-mono text-xs font-semibold',
         colorClass,
         className
       )}

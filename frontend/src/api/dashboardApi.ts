@@ -10,6 +10,7 @@ import type {
   TaskDetail,
   TaskEvent,
   TaskSummary,
+  DashboardSummaryPayload,
   ThreadDetail,
   ThreadSummary,
 } from '../types/dashboard'
@@ -50,6 +51,11 @@ export class DashboardApiClient {
   /** Fetch aggregate dashboard counters. */
   getStats(): Promise<DashboardStats> {
     return this.requestJson('/api/stats')
+  }
+
+  /** Fetch overview briefing summary shaped for the homepage. */
+  getSummary(): Promise<DashboardSummaryPayload> {
+    return this.requestJson('/api/summary')
   }
 
   /** Fetch current runtime directive. */

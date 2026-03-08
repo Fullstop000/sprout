@@ -43,6 +43,7 @@ cp .env.example .env
 ```
 
 Model registrations and runtime bindings are managed through the Dashboard and stored in `.llm247_v2/models.db`.
+If you already have a compatible `api_key.yaml`, startup can import it directly into the model registry before bootstrap checks run.
 
 ### Run
 
@@ -55,6 +56,7 @@ Useful variants:
 ```bash
 ./scripts/start_v2.sh ui
 ./scripts/start_v2.sh both
+./scripts/start_v2.sh both /path/to/api_key.yaml
 ./scripts/start_v2.sh once
 ./scripts/start_v2.sh test
 ```
