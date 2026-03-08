@@ -54,6 +54,28 @@ def _load_env() -> None:
                 os.environ[key] = value
 
 
+class _ColoredFormatter(logging.Formatter):
+    """StreamHandler formatter that highlights WARNING and ERROR lines."""
+
+    _YELLOW = "\033[33m"
+    _RED = "\033[31m"
+    _BOLD_RED = "\033[1;31m"
+    _RESET = "\033[0m"
+
+    _LEVEL_COLOR = {
+        logging.WARNING: _YELLOW,
+        logging.ERROR: _RED,
+        logging.CRITICAL: _BOLD_RED,
+    }
+
+    def format(self, record: logging.LogRecord) -> str:
+        msg = super().format(record)
+        color = self._LEVEL_COLOR.get(record.levelno)
+        if color:
+            return f"{color}{msg}{self._RESET}"
+        return msg
+
+
 def _configure_logging(log_path: Path) -> None:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     root = logging.getLogger()
@@ -68,7 +90,7 @@ def _configure_logging(log_path: Path) -> None:
     fh.setFormatter(fmt)
 
     sh = logging.StreamHandler()
-    sh.setFormatter(fmt)
+    sh.setFormatter(_ColoredFormatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
 
     root.handlers = [fh, sh]
 
