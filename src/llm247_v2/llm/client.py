@@ -277,13 +277,16 @@ def probe_registered_model_connection(
     """Probe one registered model endpoint and return connectivity status."""
     endpoint = model.api_path if model.model_type == ModelType.EMBEDDING.value else _join_openai_path(model.base_url, "chat/completions")
     payload = _build_probe_payload(model)
+    probe_headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {model.api_key}",
+    }
+    if model.roocode_wrapper:
+        probe_headers.update(_ROOCODE_HEADERS)
     request = urllib.request.Request(
         endpoint,
         data=json.dumps(payload).encode("utf-8"),
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {model.api_key}",
-        },
+        headers=probe_headers,
         method="POST",
     )
     try:
