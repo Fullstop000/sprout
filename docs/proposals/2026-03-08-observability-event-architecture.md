@@ -1,10 +1,10 @@
 # Proposal: Observability Event Architecture
 
-> Status: Draft
+> Status: Approved for Plan
 > Created: 2026-03-08
-> Decision: Pending
+> Decision: Approved; implementation is in progress in PR #57
 > Scope: Observability, dashboard projections, event storage, module contracts
-> Next Step: Review proposal and, if approved, execute the linked implementation plan
+> Next Step: Merge PR #57, complete the linked plan, then update `docs/design/observability.md`
 > Related: `docs/design/observability.md`, `docs/design/execution.md`, `docs/design/architecture.md`, `docs/plans/2026-03-08-observability-event-architecture.md`
 
 ## Summary
