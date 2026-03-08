@@ -141,6 +141,14 @@ class LLMAuditLogger:
         self._file.close()
 
 
+_ROOCODE_VERSION = "3.51.1"
+_ROOCODE_HEADERS = {
+    "HTTP-Referer": "https://github.com/RooVetGit/Roo-Cline",
+    "X-Title": "Roo Code",
+    "User-Agent": f"RooCode/{_ROOCODE_VERSION}",
+}
+
+
 class ArkLLMClient:
     """Adapter wrapping Ark/OpenAI-compatible endpoint with token tracking."""
 
@@ -151,10 +159,12 @@ class ArkLLMClient:
         model: str,
         audit_logger: LLMAuditLogger | None = None,
         tracker: TokenTracker | None = None,
+        roocode_wrapper: bool = False,
     ) -> None:
         from openai import OpenAI
 
-        self._client = OpenAI(api_key=api_key, base_url=base_url)
+        extra_headers = _ROOCODE_HEADERS if roocode_wrapper else None
+        self._client = OpenAI(api_key=api_key, base_url=base_url, default_headers=extra_headers)
         self._model = model
         self.tracker = tracker or TokenTracker()
         self._audit = audit_logger

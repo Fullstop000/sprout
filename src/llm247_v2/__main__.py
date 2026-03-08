@@ -197,6 +197,7 @@ def main() -> int:
         model=default_registered_model.model_name,
         audit_logger=audit_logger,
         tracker=shared_tracker,
+        roocode_wrapper=default_registered_model.roocode_wrapper,
     )
     llm = RoutedLLMClient(
         default_client=default_llm,
@@ -207,6 +208,7 @@ def main() -> int:
             model=registered_model.model_name,
             audit_logger=audit_logger,
             tracker=shared_tracker,
+            roocode_wrapper=registered_model.roocode_wrapper,
         ),
     )
     observer = create_default_observer(state_dir, store=store, console=True)
