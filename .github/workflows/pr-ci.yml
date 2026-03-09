@@ -34,23 +34,7 @@ jobs:
 
       - name: Run maintained unit tests with coverage
         run: |
-          python - <<'PY'
-          import subprocess
-          from pathlib import Path
-
-          modules = sorted(
-              path.as_posix().replace("/", ".").removesuffix(".py")
-              for path in Path("tests").glob("test_v2_*.py")
-              if path.name != "test_v2_agent.py"
-          )
-          if not modules:
-              raise SystemExit("No stable backend test modules were discovered.")
-
-          subprocess.run(
-              ["coverage", "run", "-m", "unittest", *modules, "-v"],
-              check=True,
-          )
-          PY
+          coverage run -m unittest discover -s tests -p "test_v2_*.py" -v
           coverage xml -o coverage.xml
           coverage report -m | tee coverage-report.txt
 

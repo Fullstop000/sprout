@@ -73,7 +73,7 @@ All checks must pass for the task to proceed to git shipping.
 
 The repository also runs one first-party GitHub Actions workflow for pull requests and pushes to `main`.
 That workflow reuses the maintained verification commands:
-- backend: coverage over the stable `test_v2_*` modules, currently excluding `tests/test_v2_agent.py` because `main` already has three failing tests there
+- backend: `coverage run -m unittest discover -s tests -p "test_v2_*.py" -v`
 - frontend: `npm run build` from `frontend/`
 
 The CI workflow is a repository-level gate for human review, not a replacement for task-local verification inside the agent loop.

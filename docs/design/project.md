@@ -77,7 +77,6 @@ PYTHONPATH=src python3 -m unittest discover -s tests -p "test_v2_*.py" -v
 
 The repository owns one GitHub Actions PR CI workflow in `.github/workflows/pr-ci.yml`.
 It runs the maintained Python unit test suite under coverage and runs the frontend production build on pull requests to `main` and pushes to `main`.
-Until the pre-existing `tests/test_v2_agent.py` failures on `main` are fixed, the backend CI command intentionally runs the stable `test_v2_*` modules except that file.
 
 ## Human Review Entry Points
 
