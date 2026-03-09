@@ -94,6 +94,7 @@ interface ControlRouteProps {
   modelBindings: Record<string, string>
   modelDesc: string
   modelError: string
+  modelsLoading: boolean
   modelName: string
   modelRoocodeWrapper: boolean
   modelType: 'llm' | 'embedding'
@@ -236,6 +237,7 @@ export function DashboardRouter(props: DashboardRouterProps) {
       modelBindings={control.modelBindings}
       modelDesc={control.modelDesc}
       modelError={control.modelError}
+      modelsLoading={control.modelsLoading}
       modelName={control.modelName}
       modelRoocodeWrapper={control.modelRoocodeWrapper}
       modelType={control.modelType}

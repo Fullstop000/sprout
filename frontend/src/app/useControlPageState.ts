@@ -46,6 +46,7 @@ export function useControlPageState({
   const [settingDefaultModelId, setSettingDefaultModelId] = useState('')
   const [resolvingTaskId, setResolvingTaskId] = useState('')
   const [modelError, setModelError] = useState('')
+  const [modelsLoading, setModelsLoading] = useState(false)
 
   useEffect(() => {
     setSourcesJson(JSON.stringify(directive?.task_sources ?? {}, null, 2))
@@ -63,6 +64,7 @@ export function useControlPageState({
   }, [])
 
   const refreshModels = useCallback(async (): Promise<void> => {
+    setModelsLoading(true)
     try {
       const payload = await dashboardApiClient.getModels()
       setRegisteredModels(payload.models ?? [])
@@ -76,6 +78,8 @@ export function useControlPageState({
     } catch (error) {
       setModelError(friendlyLoadError('Model registry', error))
       throw error
+    } finally {
+      setModelsLoading(false)
     }
   }, [friendlyLoadError])
 
@@ -282,6 +286,7 @@ export function useControlPageState({
     modelBindings,
     modelError,
     modelDesc,
+    modelsLoading,
     modelName,
     modelRoocodeWrapper,
     modelType,

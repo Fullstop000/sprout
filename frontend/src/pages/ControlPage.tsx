@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { InlineNotice } from '@/components/ui/inline-notice'
 import { Input } from '@/components/ui/input'
+import { Skeleton } from '@/components/ui/skeleton'
 import {
   Select,
   SelectContent,
@@ -48,6 +49,7 @@ interface ControlPageProps {
   bindingPoints: ModelBindingPointEntry[]
   modelBindings: Record<string, string>
   sourcesJson: string
+  modelsLoading: boolean
   modelType: 'llm' | 'embedding'
   modelBaseUrl: string
   modelApiPath: string
@@ -99,6 +101,7 @@ export function ControlPage(props: ControlPageProps) {
     bindingPoints,
     modelBindings,
     sourcesJson,
+    modelsLoading,
     modelType,
     modelBaseUrl,
     modelApiPath,
@@ -168,7 +171,12 @@ export function ControlPage(props: ControlPageProps) {
         <div className="space-y-4">
           <Card className="border-border/60 bg-card/70">
             <CardHeader>
-              <CardTitle>Model Registry</CardTitle>
+              <div className="flex items-center justify-between gap-3">
+                <CardTitle>Model Registry</CardTitle>
+                {modelsLoading && (
+                  <span className="text-xs font-medium text-muted-foreground">Loading...</span>
+                )}
+              </div>
               <CardDescription>Reusable endpoints and secrets for runtime model routing.</CardDescription>
             </CardHeader>
             <CardContent className="p-0">
@@ -184,6 +192,31 @@ export function ControlPage(props: ControlPageProps) {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
+                  {modelsLoading && registeredModels.length === 0 && (
+                    <>
+                      {Array.from({ length: 3 }).map((_, index) => (
+                        <TableRow key={`model-skeleton-${index}`}>
+                          <TableCell><Skeleton className="h-6 w-14" /></TableCell>
+                          <TableCell>
+                            <div className="space-y-2">
+                              <Skeleton className="h-4 w-40" />
+                              <Skeleton className="h-3 w-28" />
+                            </div>
+                          </TableCell>
+                          <TableCell><Skeleton className="h-4 w-56" /></TableCell>
+                          <TableCell><Skeleton className="h-4 w-16" /></TableCell>
+                          <TableCell><Skeleton className="h-4 w-20" /></TableCell>
+                          <TableCell>
+                            <div className="flex gap-2">
+                              <Skeleton className="h-8 w-24" />
+                              <Skeleton className="h-8 w-16" />
+                              <Skeleton className="h-8 w-16" />
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </>
+                  )}
                   {registeredModels.map((model) => (
                     <TableRow key={model.id}>
                       <TableCell><code className="rounded bg-muted px-1.5 py-0.5 text-xs">{model.model_type}</code></TableCell>
@@ -235,7 +268,7 @@ export function ControlPage(props: ControlPageProps) {
                       </TableCell>
                     </TableRow>
                   ))}
-                  {registeredModels.length === 0 && (
+                  {!modelsLoading && registeredModels.length === 0 && (
                     <TableRow>
                       <TableCell className="py-8 text-center italic text-muted-foreground" colSpan={6}>No registered models yet</TableCell>
                     </TableRow>
