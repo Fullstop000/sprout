@@ -87,6 +87,25 @@ class AutonomousAgentV2:
             logger.info(msg)
             raise GracefulShutdown(msg)
 
+    def _finalize_cycle(self, cycle_id: int, summary: dict) -> None:
+        """Finalize a cycle, record results and emit observability events."""
+        self.store.complete_cycle(
+            cycle_id,
+            tasks_discovered=summary["tasks_discovered"],
+            tasks_executed=summary["tasks_executed"],
+            tasks_completed=summary["tasks_completed"],
+            tasks_failed=summary["tasks_failed"],
+            summary=str(summary.get("status", "completed")),
+        )
+        self.obs.cycle_end(
+            cycle_id,
+            discovered=summary["tasks_discovered"],
+            executed=summary["tasks_executed"],
+            completed=summary["tasks_completed"],
+            failed=summary["tasks_failed"],
+        )
+        self.obs.flush()
+
     def run_cycle(self) -> dict:
         self._check_shutdown("cycle start")
 
@@ -131,22 +150,7 @@ class AutonomousAgentV2:
             summary["status"] = "error"
             self.obs.cycle_error(cycle_id, str(exc)[:300])
         finally:
-            self.store.complete_cycle(
-                cycle_id,
-                tasks_discovered=summary["tasks_discovered"],
-                tasks_executed=summary["tasks_executed"],
-                tasks_completed=summary["tasks_completed"],
-                tasks_failed=summary["tasks_failed"],
-                summary=str(summary.get("status", "completed")),
-            )
-            self.obs.cycle_end(
-                cycle_id,
-                discovered=summary["tasks_discovered"],
-                executed=summary["tasks_executed"],
-                completed=summary["tasks_completed"],
-                failed=summary["tasks_failed"],
-            )
-            self.obs.flush()
+            self._finalize_cycle(cycle_id, summary)
 
         return summary
 
