@@ -57,6 +57,7 @@ interface ControlPageProps {
   modelRoocodeWrapper: boolean
   editingModelId: string
   deletingModelId: string
+  settingDefaultModelId: string
   injectTitle: string
   injectDescription: string
   injectPriority: number
@@ -66,6 +67,7 @@ interface ControlPageProps {
   onRegisterModel: (event: React.FormEvent<HTMLFormElement>) => void
   onDeleteModel: (model: RegisteredModelEntry) => void
   onStartEditingModel: (model: RegisteredModelEntry) => void
+  onSetDefaultModel: (model: RegisteredModelEntry) => void
   onResetModelForm: () => void
   onSaveModelBindings: (event: React.FormEvent<HTMLFormElement>) => void
   onInjectTask: (event: React.FormEvent<HTMLFormElement>) => void
@@ -106,6 +108,7 @@ export function ControlPage(props: ControlPageProps) {
     modelRoocodeWrapper,
     editingModelId,
     deletingModelId,
+    settingDefaultModelId,
     injectTitle,
     injectDescription,
     injectPriority,
@@ -115,6 +118,7 @@ export function ControlPage(props: ControlPageProps) {
     onRegisterModel,
     onDeleteModel,
     onStartEditingModel,
+    onSetDefaultModel,
     onResetModelForm,
     onSaveModelBindings,
     onInjectTask,
@@ -138,6 +142,9 @@ export function ControlPage(props: ControlPageProps) {
   const modelEndpointHint = isEmbeddingModel
     ? 'The full embedding endpoint path.'
     : 'The OpenAI-compatible API root for this provider.'
+  const defaultModelIdsByType = Object.fromEntries(
+    bindingPoints.map((bindingPoint) => [bindingPoint.model_type, bindingPoint.default_model_id]),
+  ) as Record<'llm' | 'embedding', string>
 
   return (
     <div className="space-y-4">
@@ -181,7 +188,14 @@ export function ControlPage(props: ControlPageProps) {
                     <TableRow key={model.id}>
                       <TableCell><code className="rounded bg-muted px-1.5 py-0.5 text-xs">{model.model_type}</code></TableCell>
                       <TableCell>
-                        <div className="font-medium">{model.model_name}</div>
+                        <div className="flex items-center gap-2">
+                          <div className="font-medium">{model.model_name}</div>
+                          {defaultModelIdsByType[model.model_type] === model.id && (
+                            <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-emerald-800">
+                              Default
+                            </span>
+                          )}
+                        </div>
                         <div className="font-mono text-xs text-muted-foreground">{model.id}</div>
                         {model.connection_status && (
                           <div className="mt-1.5 flex items-center gap-2 text-xs">
@@ -201,6 +215,18 @@ export function ControlPage(props: ControlPageProps) {
                       <TableCell className="font-mono text-xs text-muted-foreground">{formatDateTime(model.created_at)}</TableCell>
                       <TableCell>
                         <div className="flex gap-2">
+                          <Button
+                            size="sm"
+                            variant={defaultModelIdsByType[model.model_type] === model.id ? 'default' : 'secondary'}
+                            disabled={settingDefaultModelId === model.id || defaultModelIdsByType[model.model_type] === model.id}
+                            onClick={() => onSetDefaultModel(model)}
+                          >
+                            {defaultModelIdsByType[model.model_type] === model.id
+                              ? 'Default'
+                              : settingDefaultModelId === model.id
+                                ? 'Setting...'
+                                : 'Set Default'}
+                          </Button>
                           <Button size="sm" variant="outline" onClick={() => onStartEditingModel(model)}>Edit</Button>
                           <Button size="sm" variant="destructive" disabled={deletingModelId === model.id} onClick={() => onDeleteModel(model)}>
                             {deletingModelId === model.id ? 'Deleting...' : 'Delete'}
@@ -292,6 +318,7 @@ export function ControlPage(props: ControlPageProps) {
                 <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
                   {bindingPoints.map((bindingPoint) => {
                     const availableModels = registeredModels.filter((model) => model.model_type === bindingPoint.model_type)
+                    const defaultOptionLabel = bindingPoint.default_model_name
                     return (
                       <div className="rounded-lg border border-border/60 bg-gradient-to-b from-primary/5 to-muted/30 p-4" key={bindingPoint.binding_point}>
                         <div className="mb-2 flex items-center justify-between">
@@ -306,9 +333,9 @@ export function ControlPage(props: ControlPageProps) {
                           }}
                           value={modelBindings[bindingPoint.binding_point] || '__default__'}
                         >
-                          <SelectTrigger><SelectValue placeholder="Use default registered LLM" /></SelectTrigger>
+                          <SelectTrigger><SelectValue placeholder={defaultOptionLabel} /></SelectTrigger>
                           <SelectContent>
-                            <SelectItem value="__default__">Use default registered LLM</SelectItem>
+                            <SelectItem value="__default__">{defaultOptionLabel}</SelectItem>
                             {availableModels.map((model) => (
                               <SelectItem key={model.id} value={model.id}>{model.model_name} · {model.api_key_preview}</SelectItem>
                             ))}

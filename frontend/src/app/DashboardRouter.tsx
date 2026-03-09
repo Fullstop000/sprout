@@ -84,6 +84,7 @@ interface ControlRouteProps {
   bindingPoints: ModelBindingPointEntry[]
   deletingModelId: string
   editingModelId: string
+  settingDefaultModelId: string
   injectDescription: string
   injectPriority: number
   injectTitle: string
@@ -107,6 +108,7 @@ interface ControlRouteProps {
   onResolveHelpRequest: (taskId: string) => void
   onSaveDirective: (event: React.FormEvent<HTMLFormElement>) => void
   onSaveModelBindings: (event: React.FormEvent<HTMLFormElement>) => void
+  onSetDefaultModel: (model: RegisteredModelEntry) => void
   onStartEditingModel: (model: RegisteredModelEntry) => void
   setInjectDescription: (value: string) => void
   setInjectPriority: (value: number) => void
@@ -245,9 +247,11 @@ export function DashboardRouter(props: DashboardRouterProps) {
       onResolveHelpRequest={control.onResolveHelpRequest}
       onSaveDirective={control.onSaveDirective}
       onSaveModelBindings={control.onSaveModelBindings}
+      onSetDefaultModel={control.onSetDefaultModel}
       onStartEditingModel={control.onStartEditingModel}
       registeredModels={control.registeredModels}
       resolvingTaskId={control.resolvingTaskId}
+      settingDefaultModelId={control.settingDefaultModelId}
       setInjectDescription={control.setInjectDescription}
       setInjectPriority={control.setInjectPriority}
       setInjectTitle={control.setInjectTitle}

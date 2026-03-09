@@ -253,6 +253,7 @@ def main() -> int:
             tracker=shared_tracker,
             roocode_wrapper=registered_model.roocode_wrapper,
         ),
+        default_resolver=lambda: model_store.get_default_model(),
     )
     observer = create_default_observer(state_dir, store=store, console=True)
     shutdown_event = threading.Event()
