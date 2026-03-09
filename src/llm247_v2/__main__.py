@@ -40,18 +40,8 @@ def _load_env() -> None:
     env_path = Path.cwd() / ".env"
     if not env_path.exists():
         return
-    try:
-        from dotenv import load_dotenv
-        load_dotenv(dotenv_path=env_path, override=False)
-    except ImportError:
-        for line in env_path.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, value = line.split("=", 1)
-            key, value = key.strip(), value.strip().strip("'\"")
-            if key and key not in os.environ:
-                os.environ[key] = value
+    from dotenv import load_dotenv
+    load_dotenv(dotenv_path=env_path, override=False)
 
 
 class _ColoredFormatter(logging.Formatter):
