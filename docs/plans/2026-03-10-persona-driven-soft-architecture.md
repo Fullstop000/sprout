@@ -14,509 +14,132 @@ Transform Sprout from an agent with hardcoded behavioral modules into one with a
 
 The work is divided into four phases, each independently shippable and valuable.
 
+Capability-level self-bootstrapping via module artifacts is specified separately in [2026-03-11-evolvable-module-artifacts.md](2026-03-11-evolvable-module-artifacts.md).
+
 ---
 
-## Phase 1: Platform Tools + Kernel Runtime + Persona Foundation
+## Storage Overview
 
-**Goal**: Design the tool contracts, build the kernel executor, establish the persona data model, and migrate one hardcoded module (discovery) to kernel programs as proof of concept.
+The architecture introduces one new storage database — `agent_state.db` — containing both **persona storage** (the agent's identity and self-model as flat configurable rows) and **kernel storage** (the agent's behavioral programs and their lifecycle metadata). These two storage areas share the same DB and have a well-defined relationship that drives the persona → kernel influence mechanism.
+
+### Persona Storage
+
+Persona is stored as flat rows in `agent_state.db` (`persona_state` table). Each configurable item is an individual row with a category-prefixed key (e.g. `values.tradeoff.risk_tolerance`, `policies.cycle_mode.execute`). See [2026-03-10-persona-model-and-bootstrap.md](2026-03-10-persona-model-and-bootstrap.md) for the full field catalogue and schema.
+
+The family-level persona consumption boundary is defined separately in [2026-03-10-persona-kernel-family-matrix.md](2026-03-10-persona-kernel-family-matrix.md).
+
+Every `PersonaManager.write()` produces a `persona_change_events` record (also in `agent_state.db`), which queues a kernel review on the next reflect cycle.
+
+### Kernel Storage
+
+Kernel programs have two representations:
+
+- **YAML files** in `.llm247_v2/kernel/` — the executable programs (what `KernelExecutor` reads)
+- **Records in `agent_state.db`** — lifecycle metadata and evolution history (what the reflection loop reads)
+
+```
+.llm247_v2/
+├── kernel/                       ← executable kernel programs (YAML)
+│   ├── discovery/                  programs that generate task candidates
+│   ├── evaluation/                 programs that score and rank candidates
+│   ├── planning/                   programs that decompose tasks into steps
+│   ├── attention/                  programs that monitor external signals
+│   └── reflection/                 programs that analyze performance and propose changes
+└── agent_state.db                ← persona_state + persona_change_events
+                                     + kernel lifecycle + execution + evolution
+```
+
+**Memory** is not a kernel program type — it is a platform service:
+- **Memory**: a platform service (`MemoryService`) called automatically after every task completes; deterministic extraction, not LLM-per-run
+
+**Reflection** is a kernel program type, but with a split architecture:
+- **`ReflectionCore`** (fixed Python infrastructure): schedules reflection programs, runs them via `KernelExecutor`, routes `ReflectionInsight` outputs to `PersonaUpdatePipeline` and `KernelMutationPlanner`
+- **`kernel/reflection/*.yaml`** (agent-written, evolvable): the actual analysis logic; reads persona params (`values.growth_value`, `self_model.weaknesses`, `values.risk_tolerance`) and queries `agent_state.db`; can be modified by the agent as the persona evolves
+- **Fallback**: if `kernel/reflection/` is empty, `ReflectionCore` runs a built-in minimal analysis (SQL-only, no LLM)
+- **Anti-recursion rule**: reflection programs cannot propose mutations to other reflection programs; only `discovery`, `evaluation`, `planning`, and `attention` programs can be mutated by reflection
+
+### Entity Relationships
+
+All tables live in `agent_state.db`.
+
+```
+agent_state.db
+──────────────────────────────────────────────────────────
+
+persona_state                    persona_change_events
+(key, category,    ────────────► (key, category,
+ value, value_type,               old_value, new_value,
+ editable_by)                     source, reviewed_at)
+                                       │
+                                       │ consumed by kernel_review
+                                       ▼
+kernel YAML files                kernel_programs
+─────────────────                (id, name, type, status,
+discovery/*.yaml ───────────────► created_by, quality_score,
+evaluation/*.yaml                  current_version)
+planning/*.yaml                        │
+attention/*.yaml                       │ 1:many
+                 ◄──────────────       ▼
+                                 kernel_executions
+                                (program_id, version,
+                                  cycle_number, status,
+                                  tokens_consumed,
+                                  output_summary)
+                                       │
+                                       │ 1:many
+                                       ▼
+                                 kernel_task_links
+                                (kernel_execution_id,
+                                  task_id, task_status,
+                                  task_value_score)
+
+kernel_programs ──────────────── kernel_mutations
+                   1:many        (program_id, version_before,
+                                  version_after, mutation_type,
+                                  mutation_source,
+                                  trigger_insight,
+                                  quality_before, quality_after)
+```
+
+### Key Relationships Explained
+
+| Relationship | Cardinality | Meaning |
+|---|---|---|
+| persona_state → persona_change_events | 1:many | Every persona write is logged; events queue kernel review |
+| kernel YAML ↔ kernel_programs | 1:1 | YAML is the executable; DB record is the metadata |
+| kernel_programs → kernel_executions | 1:many | Every run of a program is recorded |
+| kernel_executions → kernel_task_links | 1:many | Maps execution outputs to downstream task outcomes |
+| kernel_programs → kernel_mutations | 1:many | Full history of every body rewrite, constraint change, or retirement |
+| persona_change_events → kernel_mutations | 0:many | A persona change may produce zero or more kernel mutations via review |
+
+### What Writes to Each Store
+
+| Writer | Tables | When |
+|---|---|---|
+| `bootstrap.py` | `persona_state` (seed rows) + all kernel table schemas | Once, at initialization |
+| `initial_kernel_generation()` | kernel YAML files + `kernel_programs` | Once, first `AgentRuntime.start()` after bootstrap (empty kernel_programs) |
+| `PersonaManager.write()` | `persona_state` + `persona_change_events` | On any persona change |
+| `KernelExecutor.run()` | `kernel_executions` | Every kernel program execution |
+| `KernelRegistry.link_task()` | `kernel_task_links` | When a task generated by a kernel program completes |
+| `MemoryService` (platform) | experience store (separate) | After every task completes |
+| `ReflectionCore` (routes reflection program outputs) | `kernel_mutations` + kernel YAML + `persona_state` | On each reflection cycle |
+| `ReflectionCore` (routes reflection program outputs) | `kernel_programs.quality_score` | On each reflection cycle |
+
+---
+
+## Phase 1: Platform Tools + Kernel Runtime + Bootstrap
+
+**Goal**: Design the tool contracts, build the kernel executor, establish the persona and kernel storage models, and initialize the system with seed data — persona identity files and an initial set of kernel programs authored by humans. This is a brand-new architecture, not a migration.
 
 **Critical priority**: The first deliverable is the **tool contract design** — not kernel programs, not persona files. Tool contracts are the syscall interface of this architecture. They must be right before anything is built on top. Get the tools wrong and every kernel program needs rewriting.
 
-### 1.0 Tool Contract Design (highest priority)
+### 1.0 Tool Contract Design (prerequisite — separate plan)
 
-Design the platform's tool set: the atomic capabilities that kernel programs can invoke.
+**Extracted to [2026-03-10-platform-tool-contracts.md](2026-03-10-platform-tool-contracts.md).**
 
-**Design principles**:
-- Each tool does exactly one thing (atomic)
-- Every tool has typed input, typed output, and typed errors
-- Tool contracts are append-only: new tools can be added, existing contracts cannot change
-- Tools are **pluggable**: each tool is a self-contained module that registers itself with the tool registry. Adding a new tool = writing one file + registering it. No changes to existing code.
-- Tools belong to the constitution/platform boundary — the agent cannot modify tool implementations, but can request new tools through self-improvement proposals
-- **LLM reasoning is NOT a tool** — the LLM executing the kernel program IS the reasoner. It does not need to "call itself" to analyze content. Tools are for capabilities the LLM cannot perform by itself: interacting with filesystems, running code, accessing networks, querying databases.
+Tool contracts are the syscall interface of this architecture. They must be designed, reviewed, and locked before kernel programs or the executor are built. The tool plan covers: 8-category taxonomy (~35 tools), pluggable `@tool` decorator architecture, `ToolRegistry` auto-discovery, typed I/O and error model, and P0/P1/P2 implementation phasing.
 
-#### Tool Taxonomy
-
-Tools are organized into 8 categories following the capability taxonomy from `__loop_design.md`. Not all tools need to be implemented in Phase 1 — the pluggable architecture means tools can be added incrementally. But the complete catalog should be defined upfront so the taxonomy is coherent.
-
-**Implementation priority**: `P0` = Phase 1 (already exists or trivial to add), `P1` = Phase 2, `P2` = Phase 3+
-
-```yaml
-tools:
-
-  # ═══════════════════════════════════════════════════
-  # Category 1: FILESYSTEM
-  # Read, write, search local files
-  # ═══════════════════════════════════════════════════
-
-  read_file:                                           # P0 (exists)
-    description: Read contents of a file
-    input:
-      path: str
-      max_lines: int                 # optional, default 500
-      offset: int                    # optional, start from line N
-    output: FileContent              # {path, content, line_count}
-    errors: [not_found, permission_denied, too_large]
-
-  write_file:                                          # P0 (exists)
-    description: Write or overwrite a file
-    input:
-      path: str
-      content: str
-    output: WriteResult              # {path, bytes_written}
-    errors: [permission_denied, path_protected]
-
-  edit_file:                                           # P0 (exists)
-    description: Replace exact string in a file
-    input:
-      path: str
-      old_string: str
-      new_string: str
-    output: EditResult               # {path, replacements_made}
-    errors: [not_found, no_match, multiple_matches]
-
-  delete_file:                                         # P0 (exists)
-    description: Delete a file
-    input:
-      path: str
-    output: DeleteResult             # {path}
-    errors: [not_found, permission_denied, path_protected]
-
-  find_files:                                          # P0 (exists as list_directory)
-    description: List files matching glob patterns
-    input:
-      globs: List[str]
-      exclude_globs: List[str]       # optional
-    output: List[FileInfo]           # {path, size_bytes, modified_at}
-    errors: [invalid_glob, timeout]
-
-  grep_files:                                          # P0 (exists as search_files)
-    description: Search file contents by regex pattern
-    input:
-      patterns: List[str]
-      file_globs: List[str]
-      exclude_globs: List[str]       # optional
-      max_results: int               # optional, default 100
-    output: List[Match]              # {file_path, line_number, match_text, context}
-    errors: [invalid_pattern, timeout]
-
-
-  # ═══════════════════════════════════════════════════
-  # Category 2: CODE EXECUTION
-  # Run code, scripts, and experiments
-  # Critical for Technical Reproduction and Build
-  # ═══════════════════════════════════════════════════
-
-  run_command:                                         # P0 (exists)
-    description: Execute a shell command (SafetyPolicy enforced)
-    input:
-      command: str
-      timeout_ms: int                # optional, default 30000
-      cwd: str                       # optional, working directory
-    output: CommandResult            # {stdout, stderr, exit_code}
-    errors: [permission_denied, timeout, nonzero_exit]
-
-  run_python:                                          # P0
-    description: Execute Python code in an isolated environment
-    input:
-      code: str                      # Python source code to execute
-      timeout_ms: int                # optional, default 60000
-      requirements: List[str]        # optional, pip packages to install first
-    output: CodeResult               # {stdout, stderr, exit_code, artifacts}
-    errors: [syntax_error, runtime_error, timeout, dependency_error]
-    notes: >
-      Unlike run_command, this provides a sandboxed Python execution
-      environment. Can install dependencies, produce artifacts (files,
-      images, data), and return structured output. Essential for
-      technical reproduction, data analysis, and experimentation.
-
-  run_tests:                                           # P0 (can wrap run_command)
-    description: Run test suite and return structured results
-    input:
-      test_path: str                 # file or directory
-      framework: str                 # optional, "pytest" | "unittest", default auto-detect
-    output: TestResult               # {passed, failed, errors, test_details}
-    errors: [not_found, timeout, framework_error]
-
-  run_benchmark:                                       # P2
-    description: Run a benchmark and return metrics
-    input:
-      script: str                    # benchmark script path or inline code
-      metrics: List[str]            # what to measure, e.g. ["latency", "throughput"]
-      iterations: int                # optional, default 3
-    output: BenchmarkResult          # {metrics: Dict[str, float], raw_results}
-    errors: [script_error, timeout]
-
-
-  # ═══════════════════════════════════════════════════
-  # Category 3: VERSION CONTROL
-  # Git operations for own repo and external repos
-  # ═══════════════════════════════════════════════════
-
-  git_status:                                          # P0
-    description: Show working tree status
-    input:
-      path: str                      # optional, repo path
-    output: GitStatus                # {branch, staged, unstaged, untracked}
-    errors: [not_a_repo]
-
-  git_diff:                                            # P0
-    description: Show changes in working tree or between commits
-    input:
-      target: str                    # optional, e.g. "HEAD~3..HEAD"
-      path: str                      # optional, repo path
-    output: DiffResult               # {files_changed, insertions, deletions, diff_text}
-    errors: [invalid_ref]
-
-  git_blame:                                           # P0
-    description: Show line-by-line authorship and recency
-    input:
-      path: str
-      lines: str                     # optional, e.g. "10,20"
-    output: List[BlameLine]          # {line_number, author, date, commit_sha}
-    errors: [not_found, not_tracked]
-
-  git_log:                                             # P0
-    description: Show commit history
-    input:
-      path: str                      # optional, file or repo path
-      max_count: int                 # optional, default 20
-      since: str                     # optional, e.g. "7 days ago"
-    output: List[CommitInfo]         # {sha, author, date, message, files_changed}
-    errors: [invalid_ref]
-
-  git_create_worktree:                                 # P0 (exists)
-    description: Create an isolated branch and worktree for changes
-    input:
-      branch_name: str
-    output: WorktreeResult           # {path, branch}
-    errors: [branch_exists, worktree_error]
-
-  git_commit:                                          # P0 (exists)
-    description: Stage all changes and commit
-    input:
-      message: str
-    output: CommitResult             # {sha, files_committed}
-    errors: [nothing_to_commit, commit_error]
-
-  git_push:                                            # P0 (exists)
-    description: Push current branch to remote
-    output: PushResult               # {branch, remote}
-    errors: [push_rejected, auth_error]
-
-  git_create_pr:                                       # P0 (exists)
-    description: Create a pull request
-    input:
-      title: str
-      body: str
-    output: PRResult                 # {url, number}
-    errors: [pr_exists, auth_error]
-
-  git_clone:                                           # P1
-    description: Clone an external repository for study or reproduction
-    input:
-      url: str
-      target_dir: str                # optional
-      depth: int                     # optional, shallow clone depth
-    output: CloneResult              # {path, branch, commit_sha}
-    errors: [clone_error, auth_error, disk_full]
-    notes: >
-      Essential for Technical Reproduction: clone a trending repo,
-      read its code, run its experiments, adapt its techniques.
-      Cloned repos live in a sandboxed workspace, not the main repo.
-
-
-  # ═══════════════════════════════════════════════════
-  # Category 4: NETWORK / INTERNET
-  # Web search, fetch, browse, API access
-  # The agent's window to the external world
-  # ═══════════════════════════════════════════════════
-
-  web_search:                                          # P1
-    description: Search the web via a search engine API
-    input:
-      query: str
-      max_results: int               # optional, default 10
-      search_type: str               # optional, "general" | "news" | "academic"
-    output: List[SearchResult]       # {title, url, snippet}
-    errors: [network_error, rate_limited]
-
-  web_fetch:                                           # P1
-    description: Fetch and extract content from a URL
-    input:
-      url: str
-      extract: str                   # optional, "text" | "html" | "raw", default "text"
-      max_length: int                # optional, truncate after N chars
-    output: WebContent               # {url, content, content_type, title}
-    errors: [network_error, timeout, blocked]
-
-  web_browse:                                          # P2
-    description: Interactive browser session — navigate, click, extract
-    input:
-      url: str
-      actions: List[BrowseAction]    # [{type: "click"|"scroll"|"extract", selector: ...}]
-    output: BrowseResult             # {content, screenshots, extracted_data}
-    errors: [navigation_error, timeout]
-    notes: >
-      For sites that require JS rendering or interaction.
-      Heavier than web_fetch — use only when needed.
-
-  api_call:                                            # P1
-    description: Call a structured API endpoint
-    input:
-      url: str
-      method: str                    # default GET
-      headers: Dict[str, str]        # optional
-      query: Dict[str, str]          # optional
-      body: Dict                     # optional
-      auth_ref: str                  # optional, references credential store key
-    output: APIResponse              # {status_code, data, headers}
-    errors: [network_error, auth_error, rate_limited, timeout]
-
-  rss_fetch:                                           # P1
-    description: Fetch and parse RSS/Atom feed
-    input:
-      url: str
-      max_items: int                 # optional, default 20
-      since: str                     # optional, only items after this date
-    output: List[FeedItem]           # {title, url, summary, published_at, author}
-    errors: [network_error, parse_error]
-
-
-  # ═══════════════════════════════════════════════════
-  # Category 5: STORAGE / KNOWLEDGE
-  # Agent's persistent memory and knowledge management
-  # ═══════════════════════════════════════════════════
-
-  db_query:                                            # P0
-    description: Query the agent's SQLite databases (read-only)
-    input:
-      database: str                  # "tasks" | "experience" | "models"
-      query: str                     # SQL SELECT only
-    output: QueryResult              # {rows, columns, row_count}
-    errors: [invalid_query, permission_denied]
-
-  db_write:                                            # P0
-    description: Insert or update records in agent databases
-    input:
-      database: str
-      query: str                     # SQL INSERT/UPDATE only
-    output: WriteResult              # {rows_affected}
-    errors: [invalid_query, permission_denied, constraint_violation]
-
-  vector_store:                                        # P1 (depends on embedding infra)
-    description: Store content with embedding in a vector collection
-    input:
-      collection: str                # "experience" | "knowledge" | "signals"
-      content: str
-      metadata: Dict[str, Any]       # optional
-    output: StoreResult              # {id, collection}
-    errors: [collection_not_found, embedding_error]
-
-  vector_search:                                       # P1 (depends on embedding infra)
-    description: Semantic search against a vector collection
-    input:
-      query: str
-      collection: str
-      top_k: int                     # optional, default 5
-      filter: Dict[str, Any]         # optional, metadata filter
-    output: List[VectorResult]       # {id, content, similarity_score, metadata}
-    errors: [collection_not_found, embedding_error]
-
-  knowledge_graph_query:                               # P2
-    description: Query relationships in the agent's knowledge graph
-    input:
-      query: str                     # graph query (e.g. "related_to(X, concurrency)")
-      depth: int                     # optional, traversal depth
-    output: GraphResult              # {nodes, edges, paths}
-    errors: [invalid_query]
-
-
-  # ═══════════════════════════════════════════════════
-  # Category 6: DATA PROCESSING
-  # Parse, transform, analyze structured data
-  # ═══════════════════════════════════════════════════
-
-  parse_document:                                      # P1
-    description: Parse structured documents (PDF, CSV, JSON, YAML, HTML)
-    input:
-      path_or_content: str           # file path or raw content
-      format: str                    # "pdf" | "csv" | "json" | "yaml" | "html" | "auto"
-      extract: str                   # optional, what to extract ("tables", "text", "structured")
-    output: ParsedDocument           # {content, tables, metadata, format}
-    errors: [parse_error, unsupported_format, too_large]
-
-  data_query:                                          # P2
-    description: Run SQL-like queries on tabular data (CSV, JSON arrays)
-    input:
-      data_source: str               # file path or inline JSON
-      query: str                     # SQL-like query
-    output: DataResult               # {rows, columns, row_count}
-    errors: [parse_error, invalid_query]
-
-  generate_chart:                                      # P2
-    description: Generate a chart/visualization from data
-    input:
-      data: List[Dict]              # data points
-      chart_type: str                # "bar" | "line" | "scatter" | "pie"
-      config: Dict                   # labels, title, etc.
-    output: ChartResult              # {image_path, svg}
-    errors: [invalid_data, render_error]
-
-
-  # ═══════════════════════════════════════════════════
-  # Category 7: COMMUNICATION
-  # Publish results, interact with external platforms
-  # ═══════════════════════════════════════════════════
-
-  github_issue_create:                                 # P1
-    description: Create a GitHub issue
-    input:
-      repo: str                      # "owner/repo"
-      title: str
-      body: str
-      labels: List[str]              # optional
-    output: IssueResult              # {url, number}
-    errors: [auth_error, repo_not_found]
-
-  github_issue_comment:                                # P1
-    description: Comment on a GitHub issue or PR
-    input:
-      repo: str
-      issue_number: int
-      body: str
-    output: CommentResult            # {id, url}
-    errors: [auth_error, not_found]
-
-  publish_report:                                      # P2
-    description: Publish a structured report to the agent's report directory
-    input:
-      title: str
-      content: str
-      report_type: str               # "daily" | "weekly" | "insight" | "analysis"
-    output: ReportResult             # {path, url_if_dashboard}
-    errors: [write_error]
-
-  send_notification:                                   # P2
-    description: Send a notification via configured channel (webhook, email, etc.)
-    input:
-      channel: str                   # references notification config
-      message: str
-      urgency: str                   # "low" | "medium" | "high"
-    output: NotificationResult       # {delivered, channel}
-    errors: [channel_not_configured, delivery_error]
-
-
-  # ═══════════════════════════════════════════════════
-  # Category 8: AI / EMBEDDING
-  # Specialized AI capabilities beyond the executing LLM
-  # Note: The LLM executing the kernel program IS the reasoner.
-  # These tools are for SPECIALIZED capabilities the executing
-  # LLM cannot do inline (embeddings, different models, reranking).
-  # ═══════════════════════════════════════════════════
-
-  embed_text:                                          # P1
-    description: Generate embedding vector for text
-    input:
-      text: str
-      model: str                     # optional, defaults to configured embedding model
-    output: EmbeddingResult          # {vector, model_used, dimensions}
-    errors: [embedding_error, model_not_found]
-
-  rerank:                                              # P2
-    description: Rerank a list of items by relevance to a query
-    input:
-      query: str
-      items: List[str]
-      top_k: int                     # optional
-    output: List[RankedItem]         # {index, score, content}
-    errors: [rerank_error]
-
-  call_model:                                          # P2
-    description: Call a different LLM model for a specific sub-task
-    input:
-      model: str                     # model binding point name
-      prompt: str
-      max_tokens: int                # optional
-    output: ModelResult              # {response, model_used, token_cost}
-    errors: [model_not_found, llm_error, token_budget_exceeded]
-    notes: >
-      For cases where the kernel program needs a DIFFERENT model —
-      e.g., a cheaper model for bulk classification, or a specialized
-      model for code generation. The executing LLM handles its own
-      reasoning directly; this tool is for delegation to other models.
-```
-
-#### Why LLM reasoning is NOT a tool
-
-The previous design included `llm_analyze` as a platform tool. This was wrong. The LLM executing the kernel program in the ReAct loop **is** the analyzer. When a kernel program body says "assess the complexity of concurrent patterns," the LLM does this as part of its reasoning — it reads the code (via `read_file` tool), then thinks about what it sees. It does not need to "call itself" to think.
-
-Tools exist for capabilities the LLM **cannot perform inline**:
-- It cannot read files → `read_file`
-- It cannot run code → `run_python`
-- It cannot access the internet → `web_fetch`
-- It cannot generate embeddings → `embed_text`
-- It cannot query databases → `db_query`
-
-But it CAN: analyze, summarize, classify, compare, reason, judge, plan, evaluate — all as part of its natural reasoning within the ReAct loop. Making these into tools would add overhead (extra tool call round-trip) with no capability gain.
-
-The exception is `call_model` — this calls a **different** model, not the executing LLM. Useful for delegating bulk work to a cheaper model or specialized tasks to a fine-tuned model.
-
-#### Pluggable Tool Architecture
-
-Tools are **pluggable modules**. The tool registry is a directory where each tool is a self-contained Python file:
-
-```
-src/llm247_v2/platform/tools/
-├── __init__.py              # ToolRegistry class: discovers and loads tools
-├── _base.py                 # BaseTool abstract class + type definitions
-├── filesystem.py            # read_file, write_file, edit_file, delete_file, find_files, grep_files
-├── code_execution.py        # run_command, run_python, run_tests
-├── git.py                   # git_status, git_diff, git_blame, git_log, git_create_worktree, ...
-├── network.py               # web_search, web_fetch, api_call, rss_fetch
-├── storage.py               # db_query, db_write, vector_store, vector_search
-├── data.py                  # parse_document, data_query, generate_chart
-├── communication.py         # github_issue_create, github_issue_comment, publish_report
-└── ai.py                    # embed_text, rerank, call_model
-```
-
-**Adding a new tool**:
-1. Write a function in the appropriate category file (or create a new category file)
-2. Decorate with `@tool(name="...", description="...", input_schema=..., output_type=...)`
-3. The `ToolRegistry` auto-discovers all decorated functions on startup
-4. The new tool is immediately available in kernel program envelopes
-
-```python
-# Example: adding a new tool
-@tool(
-    name="run_docker",
-    description="Run a command inside a Docker container",
-    input_schema={
-        "image": {"type": "str", "required": True},
-        "command": {"type": "str", "required": True},
-        "timeout_ms": {"type": "int", "default": 120000},
-    },
-    output_type=CommandResult,
-    errors=["image_not_found", "timeout", "runtime_error"],
-    safety_check=True,  # must pass SafetyPolicy
-)
-def run_docker(image: str, command: str, timeout_ms: int = 120000) -> CommandResult:
-    ...
-```
-
-No changes to `ToolRegistry`, `KernelExecutor`, or any existing tool. The decorator handles registration.
-
-**Error model**: every tool returns either `{success: true, result: <typed output>}` or `{success: false, error: {type: <error_type>, message: str}}`. Kernel program bodies handle errors in natural language ("if the file is not found, skip it and continue to the next one") — the LLM in the ReAct loop interprets this and acts accordingly.
-
-#### Implementation
-
-- New directory: `src/llm247_v2/platform/tools/` with pluggable tool module structure
-- `BaseTool` abstract class with `@tool` decorator for auto-registration
-- `ToolRegistry` class: discovers tools on startup, provides schema export for LLM function-calling format
-- Phase 1 (P0): migrate existing 13 tools from `execution/tools/` into the new pluggable structure
-- Phase 2 (P1): add network, vector, communication, data parsing tools
-- Phase 3 (P2): add browser, benchmark, docker, chart, rerank, call_model tools
-- Tool contracts are part of the Constitution layer — implementations can change, contracts cannot
-- **Review gate**: tool taxonomy and contract design must be reviewed before proceeding to 1.1
+**Review gate**: tool taxonomy and contract design must be reviewed before proceeding to 1.1.
 
 ### 1.1 Kernel Executor
 
@@ -585,10 +208,18 @@ kernel program YAML
        - Remove envelope.constraints.forbidden_tools
        - All tools still pass through SafetyPolicy
 
-    2. Build system prompt:
+    2. Build system prompt (implements Path A: Runtime Binding —
+       see "Persona → Kernel Influence Mechanism" section):
+       a. Scan program.body for all `persona.X.Y` references
+       b. Resolve referenced values from PersonaManager (real-time read)
+       c. Assemble prompt:
+
        "You are executing a kernel program for agent {persona.identity.name}.
         Your role: {persona.identity.role}
         Your objective: {persona.values.core_objective}
+
+        ## Your Persona Context
+        {resolved persona values for all references found in body}
 
         Available tools: {filtered_tool_schemas}
 
@@ -600,7 +231,7 @@ kernel program YAML
         When you have produced the final output, call the finish() tool
         with the structured result."
 
-    3. User prompt = program.body
+    3. User prompt = program.body (unchanged — persona values are in system prompt)
 
     4. ReAct loop:  ← same pattern as execution/loop.py
        messages = [system_prompt, user_prompt]
@@ -674,236 +305,60 @@ The current `ReActLoop` class should be refactored into a generic base that both
   - Envelope schema validation (type, trigger, interface, metadata)
   - Output type validation
 
-### 1.2 Persona Data Model
+### 1.2 Persona Data Model and Bootstrap (separate plan)
 
-Create the persona directory and schema.
+**Extracted to [2026-03-10-persona-model-and-bootstrap.md](2026-03-10-persona-model-and-bootstrap.md).**
+
+Covers: `persona_state` flat-row schema (29 fields, `allowed_values` for enum fields), `persona_change_events` table, `PersonaManager` (read/write with type validation + identity guard), `bootstrap.py` (`CREATE TABLE IF NOT EXISTS` + `INSERT OR IGNORE` — fully idempotent, partial-init safe).
+
+**Does not cover**: `initial_kernel_generation()` and `DiscoveryPipeline` — these depend on `KernelSchema` and Path C, which are part of this plan. They are specified in section 1.3 below.
+
+**Review gate**: persona model and bootstrap must be reviewed before proceeding.
+
+### 1.3 Initial Kernel Generation and Discovery Pipeline
+
+After bootstrap, `kernel_programs` is empty. Before the first normal cycle, the agent generates its initial kernel programs from persona via Path C.
+
+**Kernel types** (type name = directory name — no mapping needed):
+
+| type | Directory | Example `kernel_programs.id` | Evolvable? |
+|---|---|---|---|
+| `discovery` | `kernel/discovery/` | `discovery/todo_sweep` | Yes |
+| `evaluation` | `kernel/evaluation/` | `evaluation/task_scorer` | Yes |
+| `planning` | `kernel/planning/` | `planning/task_decomposition` | Yes |
+| `attention` | `kernel/attention/` | `attention/github_trending_monitor` | Yes |
+| `reflection` | `kernel/reflection/` | `reflection/failure_pattern_analysis` | Yes (by `ReflectionCore` only; cannot self-modify) |
+
+`kernel_programs.id` = `<type>/<name>`. `KernelRegistry` reads/writes `kernel/<type>/<name>.yaml` directly — no translation.
+
+**Detection**: `AgentRuntime.start()` checks `SELECT COUNT(*) FROM kernel_programs WHERE status = 'active'` — if zero, calls `initial_kernel_generation()` before the first cycle.
 
 ```
-.llm247_v2/persona/
-├── identity.json
-├── values.json
-├── attention.json
-├── policies.json
-└── self_model.json
+initial_kernel_generation():
+  1. persona = PersonaManager.read_all()
+  2. For each required type [discovery, evaluation, reflection]:
+       a. Call Path C generation with full persona context (see "Path C" section)
+       b. KernelSchema.validate(generated_program)
+       c. Write YAML to .llm247_v2/kernel/<type>/<name>.yaml
+       d. INSERT into kernel_programs (id="<type>/<name>", created_by="agent")
+  3. Emit kernel_generated events to Observer
 ```
 
-**identity.json**:
-```json
-{
-  "name": "Sprout",
-  "role": "autonomous engineering agent",
-  "mission": "Build deep understanding of its world, pursue goals across time, and deliberately improve its own capabilities",
-  "self_narrative": "",
-  "boundaries": ["never modify constitution.md or safety.py"]
-}
-```
+Note: `reflection` programs are generated at bootstrap so the agent immediately has analysis logic shaped by its persona (e.g. `values.growth_value` determines how aggressively to seek improvements). The `ReflectionCore` scheduler runs these programs; it does not write its own analysis logic.
 
-**values.json**:
-```json
-{
-  "core_objective": "Compound usefulness through learning, reflection, and self-modification",
-  "tradeoffs": {
-    "thoroughness_vs_speed": 0.7,
-    "exploration_vs_exploitation": 0.5,
-    "novelty_vs_proven": 0.4,
-    "depth_vs_breadth": 0.5
-  },
-  "risk_tolerance": 0.3,
-  "long_term_weight": 0.7,
-  "growth_value": 0.6
-}
-```
-
-**attention.json**:
-```json
-{
-  "domain_interests": [
-    {"topic": "string", "weight": 0.0, "source": "initial|learned|directive"}
-  ],
-  "source_preferences": ["code analysis", "security advisories"],
-  "novelty_sensitivity": 0.5,
-  "anomaly_sensitivity": 0.5,
-  "exploration_radius": "medium"
-}
-```
-
-**policies.json**:
-```json
-{
-  "reflection_frequency_cycles": 10,
-  "planning_style": "incremental",
-  "verification_depth": "standard",
-  "stop_rules": {
-    "max_retries_per_step": 3,
-    "max_tokens_per_task": 50000,
-    "abandon_after_failures": 2
-  },
-  "cycle_mode_weights": {
-    "execute": 0.4,
-    "discover": 0.25,
-    "explore": 0.15,
-    "reflect": 0.1,
-    "study": 0.1
-  }
-}
-```
-
-**self_model.json**:
-```json
-{
-  "strengths": [],
-  "weaknesses": [],
-  "known_failure_patterns": [],
-  "growth_targets": [],
-  "capability_stats": {},
-  "understanding_map": {},
-  "updated_at": ""
-}
-```
-
-#### Implementation
-
-- New file: `src/llm247_v2/core/persona.py`
-  - `PersonaManager` class: load, validate, read, write persona files
-  - Schema validation per file (reject malformed updates)
-  - Change tracking: every write produces a diff emitted to Observer
-  - Immutability guard: `identity.json` writes require `directive.json` approval flag
-- Migrate existing `InterestProfile` data into `attention.json`
-- Migrate existing `directive.json` focus_areas into `attention.json` (directive remains as override)
-
-### 1.3 Bootstrap Kernel Programs + Discovery Migration
-
-Convert the 12 hardcoded discovery strategies into kernel programs. Each gets a structured envelope and a natural language body that captures the strategy's logic with the full expressiveness the original Python function had (and more — the body can reference persona, express judgment, handle edge cases).
-
-**Example bootstrap program** — `kernel/discovery/todo_sweep.yaml`:
-
-```yaml
-schema_version: 1
-type: discovery_strategy
-name: todo_sweep
-description: Find actionable TODO/FIXME/HACK comments in the codebase
-
-interface:
-  trigger:
-    interval_cycles: 5
-  available_tools: [grep_files, read_file, git_blame]
-  output_type: List[TaskCandidate]
-  constraints:
-    max_tool_calls: 30
-    max_tokens: 8000
-
-body: |
-  Search for TODO, FIXME, HACK, and XXX comments in all Python files
-  under src/, excluding test files.
-
-  For each match found:
-  1. Read the surrounding context (the function or class containing the comment)
-  2. Use git_blame to check when the comment was added — older TODOs
-     are more likely to represent real technical debt
-  3. Assess whether the TODO is actionable:
-     - Actionable: describes a specific code change ("TODO: add retry logic here")
-     - Not actionable: vague wish ("TODO: make this better someday")
-     - Skip non-actionable TODOs entirely
-
-  Generate one TaskCandidate per actionable TODO. Set priority based on:
-  - TODOs in modules listed in persona.attention.domain_interests → higher priority
-  - TODOs older than 30 days → higher priority (real debt, not in-progress work)
-  - TODOs in frequently-modified files → higher priority (active code)
-
-  Each candidate should include the TODO text, file location, surrounding
-  context, and age as evidence for the human reviewer.
-
-metadata:
-  created_by: bootstrap
-  created_at: "2026-03-10"
-  quality_score: null
-```
-
-All 12 strategies are converted similarly. The natural language body should capture everything the Python function did, plus persona-awareness that the Python version lacked.
-
-#### Implementation
-
-- New directory: `.llm247_v2/kernel/discovery/`
-- Write 12 bootstrap kernel programs (one per existing strategy)
-- Build new `DiscoveryPipeline` that loads kernel programs and executes via `KernelExecutor`
-- Record every execution in `kernel_registry.db` (kernel_executions table)
-
-### 1.4 Evaluation as Kernel Program
-
-Convert `value.py` heuristic scoring to a kernel program.
-
-```yaml
-schema_version: 1
-type: evaluation
-name: task_value_assessment
-description: Score and rank discovery candidates by value
-
-interface:
-  trigger: on_demand  # called by discovery pipeline after candidate generation
-  available_tools: [db_query]
-  input_type: List[TaskCandidate]
-  output_type: List[ScoredTask]
-  constraints:
-    max_tool_calls: 15
-    max_tokens: 12000
-
-body: |
-  Evaluate each task candidate on four dimensions, producing a 0-1 score
-  for each:
-
-  1. **Severity**: How important is this problem?
-     - Security vulnerability or data loss risk → 0.9-1.0
-     - Correctness bug → 0.7-0.8
-     - Performance issue → 0.5-0.6
-     - Code quality / tech debt → 0.2-0.4
-     - Style / cosmetic → 0.0-0.1
-
-  2. **Alignment**: How well does this match my current focus?
-     - Directly in persona.attention.domain_interests (high weight) → 0.8-1.0
-     - Related to a domain interest → 0.4-0.6
-     - Unrelated but still useful → 0.1-0.3
-
-  3. **Feasibility**: Can I actually complete this successfully?
-     - Similar to tasks in my persona.self_model.strengths → 0.8-1.0
-     - Standard difficulty → 0.5-0.7
-     - In my persona.self_model.weaknesses → 0.2-0.4
-       (but give a bonus if persona.values.growth_value is high —
-        working on weaknesses is valuable for growth)
-
-  4. **Scope**: Is the change manageable?
-     - Single file, clear change → 0.9-1.0
-     - Multi-file, same module → 0.6-0.8
-     - Cross-module refactor → 0.2-0.4
-
-  Final score = severity × 0.3 + alignment × 0.25 + feasibility × 0.25 + scope × 0.2
-
-  Rank candidates by final score. Return the top 5.
-  For each, include the dimension scores and a one-sentence rationale.
-
-metadata:
-  created_by: bootstrap
-  created_at: "2026-03-10"
-  quality_score: null
-```
-
-#### Implementation
-
-- New file: `.llm247_v2/kernel/evaluation/task_value_assessment.yaml`
-- Build evaluation as kernel program, executed by `KernelExecutor`
-- Output type `ScoredTask` validates that scores are in range and rationale is present
+**DiscoveryPipeline**: loads all `kernel/discovery/*.yaml` programs and runs each via `KernelExecutor`.
 
 ### Phase 1 Deliverables
 
-- [ ] Tool contract design reviewed and locked
-- [ ] `tool_registry.py` with all initial tools and type schemas
+- [ ] Tool contract design reviewed and locked (see [platform-tool-contracts plan](2026-03-10-platform-tool-contracts.md))
+- [ ] Persona model and bootstrap complete (see [persona-model-and-bootstrap plan](2026-03-10-persona-model-and-bootstrap.md))
 - [ ] `KernelExecutor` with constraint enforcement and audit logging
-- [ ] `PersonaManager` with schema validation and change tracking
-- [ ] Initial persona files populated from existing directive/interest profile data
-- [ ] 12 bootstrap discovery kernel programs
-- [ ] 1 evaluation kernel program
-- [ ] `kernel_registry.db` schema and `KernelRegistry` class
-- [ ] `DiscoveryPipeline` built on kernel executor
-- [ ] Tests: tool type validation, executor constraint enforcement, output validation, safety boundaries, execution recording
+- [ ] `KernelSchema`: envelope validation; types are `discovery | evaluation | planning | attention | reflection`; `id = <type>/<name>`
+- [ ] `KernelRegistry`: reads/writes `kernel/<type>/<name>.yaml` directly; no type→directory mapping needed
+- [ ] Path A implementation: persona reference scanner + runtime value injection into system prompt
+- [ ] `initial_kernel_generation()`: empty-kernel detection in `AgentRuntime.start()`, Path C generation, schema validation
+- [ ] `DiscoveryPipeline`: loads from `kernel/discovery/`, runs via `KernelExecutor`
+- [ ] Tests: executor constraint enforcement, output validation, safety boundaries, execution recording, Path A persona injection, second start skips generation
 
 ---
 
@@ -911,15 +366,15 @@ metadata:
 
 **Goal**: Open external signal channels and build attention kernel programs that connect persona interests to external information.
 
-### 2.1 External Signal Kernel Programs
+### 2.1 Attention Kernel Programs
 
-New kernel program type: `signal_source` — programs that fetch and filter external information.
+Kernel program type: `attention` — programs that fetch external signals and filter them for novelty.
 
 **Example** — `kernel/attention/github_trending_monitor.yaml`:
 
 ```yaml
 schema_version: 1
-type: attention_source
+type: attention
 name: github_trending_monitor
 description: Monitor GitHub trending repos filtered by persona interests
 
@@ -951,18 +406,18 @@ body: |
   - suggested_action: "study" (read and learn) | "reproduce" (try to run/adapt) | "note" (just remember)
 
 metadata:
-  created_by: bootstrap
+  created_by: agent
   created_at: "2026-03-10"
   quality_score: null
 ```
 
-**Bootstrap signal sources**: GitHub Trending, HackerNews Top, arXiv recent (3 programs).
+**Example signal sources** the agent might generate given appropriate persona interests: GitHub Trending, HackerNews Top, arXiv recent.
 
 ### 2.2 Novelty Filter Kernel Program
 
 ```yaml
 schema_version: 1
-type: attention_filter
+type: attention
 name: novelty_filter
 description: Compare incoming signals against existing knowledge to detect true novelty
 
@@ -996,7 +451,7 @@ body: |
   Output filtered signals with added novelty_score and novelty_rationale fields.
 
 metadata:
-  created_by: bootstrap
+  created_by: agent
   created_at: "2026-03-10"
   quality_score: null
 ```
@@ -1007,12 +462,12 @@ New cycle mode integrated into the agent loop.
 
 ```
 explore mode:
-  1. KernelExecutor runs each triggered attention_source program
-  2. Collected signals pass through novelty_filter program
+  1. KernelExecutor runs each triggered attention program with trigger=interval
+  2. Collected signals pass through attention programs with trigger=on_signals (novelty filter)
   3. Surviving signals are routed:
      a. suggested_action == "study" → queue study task
      b. suggested_action == "reproduce" → queue discovery candidate
-     c. suggested_action == "note" → store in knowledge memory
+     c. suggested_action == "note" → MemoryService.store(signal)
   4. Update exploration map with external scan record
 ```
 
@@ -1020,13 +475,12 @@ explore mode:
 
 - New tool: credential store access for API keys (`.llm247_v2/credentials/`, gitignored)
 - Rate limiting middleware in `api_call` and `web_fetch` tools
-- `explore` cycle mode in agent loop, reading `persona/policies.json` cycle_mode_weights
+- `explore` cycle mode in agent loop, reading `policies.cycle_mode.*` weights from `PersonaManager`
 - Persona-driven cycle mode selection replaces fixed discover→execute
 
 ### Phase 2 Deliverables
 
-- [ ] 3 bootstrap signal source kernel programs
-- [ ] 1 novelty filter kernel program
+- [ ] Agent generates `attention` kernel programs on first explore cycle (via Path C, from persona.attention)
 - [ ] Credential store for API keys
 - [ ] Rate limiting for external API tools
 - [ ] `explore` cycle mode in agent loop
@@ -1037,9 +491,47 @@ explore mode:
 
 ## Phase 3: Reflection Loop + Persona Evolution
 
-**Goal**: Build the meta-cognition cycle — kernel programs that analyze performance, update persona, and generate/modify other kernel programs.
+**Goal**: Build `ReflectionCore` — a fixed Python scheduler that runs `kernel/reflection/*.yaml` programs via `KernelExecutor`, routes their outputs to `PersonaUpdatePipeline` and `KernelMutationPlanner`, and drives persona updates and kernel mutations.
 
-### 3.1 Reflection Kernel Programs
+**Architecture — split between fixed infrastructure and evolvable programs**:
+
+| Layer | What it is | Who writes it | Can it evolve? |
+|---|---|---|---|
+| `ReflectionCore` | Fixed Python class; schedules + runs reflection programs; routes outputs | Engineers | No (fixed code) |
+| `kernel/reflection/*.yaml` | Kernel programs; contain the actual analysis logic | Agent (via Path C at bootstrap, then self-modified) | Yes — but only by `ReflectionCore`, not by other reflection programs |
+
+**Why this split**: a fully fixed `ReflectionRunner` cannot adapt to persona changes (e.g. if `values.growth_value` shifts to "ambitious", reflection should probe more aggressively; if `self_model.weaknesses` changes, analysis queries should change). But making reflection fully free-form risks breaking the meta-loop. The split gives evolvability where it matters while keeping the execution harness stable.
+
+### 3.1 ReflectionCore
+
+`ReflectionCore` is fixed Python infrastructure. It does not contain analysis logic.
+
+```python
+class ReflectionCore:
+    def run(self, cycle_number: int) -> ReflectionReport:
+        programs = KernelRegistry.list(type="reflection", status="active")
+        if not programs:
+            # Fallback: built-in minimal analysis (SQL-only, no LLM, no persona influence)
+            return self._builtin_minimal_analysis(cycle_number)
+
+        all_insights = []
+        for program in programs:
+            result = KernelExecutor.run(program, context={
+                "cycle_number": cycle_number,
+                "persona": PersonaManager.read_all(),   # programs receive full persona
+            })
+            all_insights += OutputRouter.extract(result, ReflectionInsight)
+
+        return ReflectionReport(insights=all_insights, cycle=cycle_number)
+```
+
+`ReflectionCore` runs every `policies.reflection_frequency_cycles` cycles. Each reflection program receives the full current persona as context, so analysis logic can be written in terms of persona parameters.
+
+**Anti-recursion constraint**: `KernelExecutor` enforces that programs of type `reflection` cannot emit `ModifyKernelInsight` targeting other `reflection` programs. Violations are logged and dropped.
+
+**Fallback** (`_builtin_minimal_analysis`): runs three hard-coded SQL queries (failure rate by task type, unprocessed `persona_change_events`, token outliers) and emits basic `ReflectionInsight` objects. No LLM call, no persona influence — guaranteed to produce some output even on a fresh install.
+
+### 3.2 Reflection Kernel Programs
 
 **Example** — `kernel/reflection/failure_pattern_analysis.yaml`:
 
@@ -1047,146 +539,120 @@ explore mode:
 schema_version: 1
 type: reflection
 name: failure_pattern_analysis
-description: Identify recurring failure patterns across recent tasks
+description: Identify failure clusters and propose kernel mutations or persona updates
 
 interface:
   trigger:
-    every_n_cycles: 10
-  available_tools: [db_query]
-  output_type: ReflectionInsights
+    every_n_cycles: 1          # runs every time ReflectionCore fires
+  available_tools: [db_query]  # reflection programs only get read-only DB access
+  output_type: List[ReflectionInsight]
   constraints:
     max_tool_calls: 10
-    max_tokens: 15000
+    max_tokens: 6000
 
 body: |
-  Query the task database for the last 20 completed or failed tasks.
-  For each, retrieve: title, status, task type tags, error messages
-  (if failed), execution step count, token cost, and source strategy.
+  Query kernel_executions for the last 20 cycles. Group by program type and status.
+  Identify any program with failure rate > 0.4.
 
-  Analyze this batch for patterns:
+  For each failure cluster:
+  - Check if the failure pattern matches a known weakness in persona.self_model.weaknesses
+  - If yes: the failure is expected; propose a persona update to track improvement progress
+  - If no: propose a kernel mutation (modify the failing program's constraints or body)
 
-  1. **Failure clusters**: Are there task types that fail disproportionately?
-     Group failures by type/tag and look for clusters of 3+ failures
-     in the same category.
+  Calibrate aggressiveness of proposed changes by persona.values.growth_value:
+  - "ship_now": propose only constraint relaxations (faster to apply, lower risk)
+  - "balanced": propose body rewrites for persistent failures (>3 cycles)
+  - "meticulous": always propose body rewrite with full rationale
 
-  2. **Cost outliers**: Which tasks consumed disproportionate tokens
-     relative to their scope? A simple single-file fix that costs
-     >20k tokens suggests a planning or execution problem.
-
-  3. **Strategy yield**: For each discovery strategy that produced tasks
-     in this batch, what fraction succeeded? Strategies with <30% success
-     rate over 5+ tasks may need modification or retirement.
-
-  4. **Planning accuracy**: How often did execution match the plan?
-     Tasks requiring many replanning steps suggest the planning kernel
-     program needs adjustment.
-
-  For each identified pattern, produce an insight with:
-  - pattern_description: what was observed
-  - evidence: specific tasks that demonstrate it
-  - hypothesis: why this might be happening
-  - suggested_action: one of:
-    - "update_persona": change a persona parameter
-    - "modify_kernel": change an existing kernel program
-    - "create_kernel": write a new kernel program
-    - "flag_human": bring this to human attention
-  - action_detail: specific change proposed
-
-  Cross-reference findings with persona.self_model.known_failure_patterns
-  to see if patterns are new or recurring. Recurring patterns that
-  weren't addressed deserve higher urgency.
+  Output one ReflectionInsight per identified cluster.
 
 metadata:
-  created_by: bootstrap
+  created_by: agent
   created_at: "2026-03-10"
   quality_score: null
+  version: 1
 ```
 
-**Bootstrap reflection programs**:
-- `failure_pattern_analysis.yaml` — identify failure clusters
-- `strategy_quality_review.yaml` — rate discovery/attention programs by outcome
-- `cost_efficiency_analysis.yaml` — find token cost anomalies
-- `persona_update.yaml` — translate reflection insights into persona changes
+**What reflection programs can do**:
+- `db_query` (read-only): query `kernel_executions`, `kernel_task_links`, `kernel_mutations`, `persona_state`, `persona_change_events`
+- Emit `ReflectionInsight(suggested_action=..., ...)` for routing by `ReflectionCore`
 
-### 3.2 Persona Update Pipeline
+**What reflection programs cannot do**:
+- Write to any table directly
+- Call tools other than `db_query`
+- Emit `ModifyKernelInsight` targeting type `reflection` (anti-recursion; enforced by `KernelExecutor`)
 
-When reflection programs produce persona change proposals:
+### 3.3 Persona Update Pipeline
+
+`ReflectionCore` routes `update_persona` insights to `PersonaUpdatePipeline`:
 
 ```
-reflection output: {suggested_action: "update_persona", action_detail: "add concurrency to weaknesses"}
+ReflectionInsight(suggested_action="update_persona", key="self_model.weaknesses", detail="add concurrency")
         │
         ▼
-  classify risk:
-    low_risk  (self_model update)        → auto-apply, log to Observer
-    medium_risk (values/attention change) → auto-apply, flag for human review
-    high_risk (identity change)           → write proposal to human message queue, do NOT apply
+  classify risk by key category:
+    self_model.*   → auto-apply, log to Observer
+    values.*, attention.*  → auto-apply, flag for human review in dashboard
+    identity.*     → write to human message queue, do NOT apply
         │
         ▼
-  PersonaManager.write()
-    - validate schema
-    - compute diff
-    - emit persona_changed event
-    - git commit with reflection context in commit message
+  PersonaManager.write(key, new_value, source="reflection/failure_pattern_analysis")
+    → persona_state updated
+    → persona_change_events row inserted (Path B trigger)
 ```
 
-### 3.3 Kernel Program Generation and Modification
+### 3.4 Kernel Program Mutation (Path B + Path C)
 
-Reflection can also propose changes to kernel programs themselves.
+`ReflectionCore` routes `modify_kernel` and `create_kernel` insights to `KernelMutationPlanner`:
 
-**Generation flow**:
+**Path B — existing program body invalidated by persona change**:
 ```
-reflection insight: "I need a strategy for monitoring concurrency test gaps"
+reflection program emits:
+  ReflectionInsight(suggested_action="modify_kernel", program_id="discovery/todo_sweep",
+                    rationale="persona.values.risk_tolerance changed to careful; current
+                               max_tool_calls=5 is too low for careful verification")
         │
         ▼
-  Agent writes new kernel program:
-    - envelope: inferred from type (discovery_strategy defaults)
-    - body: written by LLM using persona context + insight context + existing program examples
-        │
-        ▼
+KernelMutationPlanner.modify(program, insight):
+  LLM rewrites affected body sections
   KernelSchema.validate(new_program)
-    - envelope schema check
-    - safety check (no disallowed tools in available_tools)
-    - output type is valid for the program type
-        │
-        ▼
-  write to kernel/ directory
-  git commit with generation context
-  flag for human review
+  Write updated YAML + record kernel_mutation + mark persona_change_event reviewed
+  Flag for human review
 ```
 
-**Modification flow**:
+**Path C — new program needed**:
 ```
-reflection insight: "strategy X has <30% success rate over 10 tasks"
+reflection program emits:
+  ReflectionInsight(suggested_action="create_kernel", type="discovery", rationale="...")
         │
         ▼
-  options (selected based on severity):
-    a. modify body (LLM rewrites parts of the strategy logic)
-    b. adjust constraints (increase/decrease tool/token limits)
-    c. disable (set enabled: false)
-    d. delete (if quality_score < 0.1 for 3+ reflection cycles)
-        │
-        ▼
-  same validation pipeline
-  git commit with modification rationale
+KernelMutationPlanner.create(type, insight):
+  Call Path C generation (see "Path C" section)
+  KernelSchema.validate + write YAML + record kernel_mutation
+  Flag for human review
 ```
 
 ### Phase 3 Deliverables
 
-- [ ] 4 bootstrap reflection kernel programs
-- [ ] Persona update pipeline with risk classification
-- [ ] Kernel program generation via reflection (recorded in kernel_mutations)
-- [ ] Kernel program modification via reflection (recorded in kernel_mutations)
+- [ ] `ReflectionCore`: scheduler + `KernelExecutor` dispatch + fallback minimal analysis + anti-recursion enforcement
+- [ ] Initial `kernel/reflection/failure_pattern_analysis.yaml` (human-authored seed program)
+- [ ] Initial `kernel/reflection/persona_coverage_check.yaml` (scans `persona_change_events` for unreviewed kernel impact — Path B trigger)
+- [ ] `PersonaUpdatePipeline` with risk classification per persona key category
+- [ ] `KernelMutationPlanner`: Path B (body rewrite when persona change invalidates logic) + Path C (new program creation)
+- [ ] Path B: `persona_change_events` consumption — scanner + mutation decision + `reviewed_at` update
+- [ ] Path C: generation prompt construction + `KernelSchema.validate()` + `kernel_mutations` record + human review flag
 - [ ] `kernel_task_links` population: link kernel executions to downstream task outcomes
-- [ ] Reflection queries against `kernel_registry.db` for strategy quality assessment
 - [ ] `reflect` cycle mode in agent loop
-- [ ] Dashboard: persona change history + kernel evolution timeline views
-- [ ] Tests: reflection analysis, persona update safety, kernel program generation validation, evolution trace integrity
+- [ ] Dashboard: persona change history + kernel mutation timeline
+- [ ] Tests: reflection program executes via `KernelExecutor`, fallback triggers when `kernel/reflection/` is empty, anti-recursion blocks self-modification, persona update risk classification, Path B end-to-end, Path C generation produces valid programs
 
 ---
 
-## Phase 4: Planning, Memory, and Synthesis Kernel Programs
+## Phase 4: Planning Kernel Programs + MemoryService
 
-**Goal**: Complete the kernel migration — planning, memory rules, and knowledge synthesis all become kernel programs.
+**Goal**: Replace the fixed `plan_task.txt` prompt with evolvable `planning` kernel programs, and build `MemoryService` as a platform component for experience extraction.
+
+**Memory is a platform service, not a kernel program**: experience extraction runs automatically after every task and must be reliable. Making it an agent-written kernel program introduces fragility at the point where the system is most vulnerable — immediately after a task fails.
 
 ### 4.1 Planning Kernel Programs
 
@@ -1239,123 +705,34 @@ body: |
   - rollback: what to do if this step fails
 
 metadata:
-  created_by: bootstrap
+  created_by: agent
   created_at: "2026-03-10"
   quality_score: null
 ```
 
-### 4.2 Memory Kernel Programs
+### 4.2 MemoryService (platform component)
 
-```yaml
-# kernel/memory/experience_extraction.yaml
-schema_version: 1
-type: memory
-name: experience_extraction
-description: Extract learnings from completed tasks
+`MemoryService` is called by `AgentRuntime` after every task completes. It uses a fixed LLM prompt (not an agent-written kernel program) to extract experience entries and write them to the experience store.
 
-interface:
-  trigger: on_task_complete
-  available_tools: [vector_search, db_query]
-  input_type: CompletedTask
-  output_type: List[ExperienceEntry]
-  constraints:
-    max_tool_calls: 10
-    max_tokens: 8000
-
-body: |
-  Extract learnings from a completed task. Focus on what's genuinely
-  useful for future work — not just "task X was completed."
-
-  Check existing experience store for similar learnings (vector_search).
-  If a very similar lesson already exists (similarity > 0.85):
-  - Reinforce it: increase its confidence score
-  - Update it: add new nuance from this task if the lesson has evolved
-  - Do NOT create a duplicate
-
-  If the lesson is new, assess what kind it is:
-  - Technique: a method that worked (or didn't) for a specific problem type
-  - Pitfall: something that went wrong and how to avoid it
-  - Pattern: a recurring structure in the codebase or problem domain
-  - Insight: a deeper understanding about how something works
-
-  Based on persona.values:
-  - If growth_value is high, prioritize recording failures and near-misses
-    (they're the most valuable for learning)
-  - If risk_tolerance is low, prioritize recording pitfalls and safety-related
-    lessons
-
-  Each ExperienceEntry includes: category, summary, detail, tags,
-  source_task_id, confidence_score, and embedding vector.
-
-metadata:
-  created_by: bootstrap
-  created_at: "2026-03-10"
-  quality_score: null
+```python
+class MemoryService:
+    def on_task_complete(self, task: CompletedTask) -> list[ExperienceEntry]:
+        # Fixed prompt: extract learnings, deduplicate via vector_search,
+        # categorize as Technique / Pitfall / Pattern / Insight
+        # Write to experience store with embedding
+        ...
 ```
 
-### 4.3 Synthesis Kernel Programs
-
-New capability: combining information from multiple sources into structured understanding.
-
-```yaml
-# kernel/synthesis/hypothesis_generation.yaml
-schema_version: 1
-type: synthesis
-name: hypothesis_generation
-description: Generate new questions and hypotheses from recent findings
-
-interface:
-  trigger:
-    every_n_cycles: 15
-  available_tools: [db_query, vector_search]
-  output_type: List[Hypothesis]
-  constraints:
-    max_tool_calls: 10
-    max_tokens: 12000
-
-body: |
-  Review recent signals, completed tasks, and new experiences from the
-  last 15 cycles. Look for:
-
-  1. **Convergence**: multiple independent sources pointing to the same
-     topic or trend. If 3+ signals mention the same technology or pattern,
-     it's worth deeper investigation.
-
-  2. **Contradictions**: sources that disagree about something. Contradictions
-     are more interesting than agreements — they suggest an area where
-     understanding is incomplete.
-
-  3. **Gaps**: topics that my persona.attention.domain_interests cover but
-     where I have few or no experiences. These represent known unknowns.
-
-  4. **Cross-domain connections**: can something I learned in one domain
-     apply to another? This is where the most creative insights come from.
-
-  For each identified pattern, generate a Hypothesis:
-  - question: what I want to understand
-  - evidence: what signals/experiences led to this question
-  - suggested_exploration: "study" (read about it), "experiment" (try building
-    something), or "monitor" (keep watching for more signals)
-  - priority: based on persona.values alignment and novelty
-
-  Hypotheses with suggested_exploration == "study" become study tasks.
-  Hypotheses with "experiment" become discovery candidates.
-  Hypotheses with "monitor" update persona.attention.domain_interests.
-
-metadata:
-  created_by: bootstrap
-  created_at: "2026-03-10"
-  quality_score: null
-```
+**What it uses from persona** (read directly via `PersonaManager`, not via kernel body references):
+- `values.growth_value` → prioritize failures and near-misses when high
+- `values.risk_tolerance` → prioritize pitfalls and safety lessons when low
 
 ### Phase 4 Deliverables
 
-- [ ] Planning kernel programs (task decomposition, context assembly)
-- [ ] Memory kernel programs (extraction, compression, forgetting)
-- [ ] Synthesis kernel programs (integration, hypothesis generation)
-- [ ] Study cycle mode using synthesis for knowledge building
-- [ ] All fixed prompt templates replaced by kernel programs
-- [ ] Tests: plan generation, memory extraction, synthesis triggers
+- [ ] `planning` kernel programs (task decomposition, context assembly) — agent-written, evolvable
+- [ ] `MemoryService`: platform component called after every task; fixed extraction logic; vector deduplication
+- [ ] Reflection kernel programs can query experience store for pattern analysis (built on MemoryService output)
+- [ ] Tests: planning program produces valid TaskPlan, MemoryService deduplicates correctly, experience entries are queryable by reflection programs
 
 ---
 
@@ -1368,7 +745,7 @@ Kernel programs are not static files — they are living artifacts that the agen
 Each kernel program has two representations:
 
 1. **The YAML file** in `.llm247_v2/kernel/` — the current executable version (what the KernelExecutor reads)
-2. **A record in `kernel_registry.db`** — the lifecycle metadata, execution history, and evolution trace (what the reflection loop reads)
+2. **A record in `agent_state.db`** — the lifecycle metadata, execution history, and evolution trace (what the reflection loop reads)
 
 ```
 .llm247_v2/
@@ -1376,19 +753,19 @@ Each kernel program has two representations:
 │   ├── discovery/
 │   ├── evaluation/
 │   ├── ...
-└── kernel_registry.db               # SQLite: lifecycle + execution + evolution metadata
+└── agent_state.db               # SQLite: lifecycle + execution + evolution metadata
 ```
 
-### Schema: `kernel_registry.db`
+### Schema: `agent_state.db`
 
 ```sql
 -- Every kernel program ever created (including disabled/deleted ones)
 CREATE TABLE kernel_programs (
     id              TEXT PRIMARY KEY,    -- e.g. "discovery/todo_sweep"
     name            TEXT NOT NULL,
-    type            TEXT NOT NULL,       -- "discovery_strategy", "evaluation", "reflection", ...
+    type            TEXT NOT NULL,       -- "discovery" | "evaluation" | "planning" | "attention" | "reflection"
     status          TEXT NOT NULL,       -- "active", "disabled", "retired", "replaced"
-    created_by      TEXT NOT NULL,       -- "bootstrap", "agent", "human"
+    created_by      TEXT NOT NULL,       -- "agent" (all kernel programs are agent-generated)
     created_at      TEXT NOT NULL,
     creation_context TEXT,              -- why this program was created (reflection insight, human request, etc.)
     current_version INTEGER DEFAULT 1,
@@ -1428,7 +805,7 @@ CREATE TABLE kernel_mutations (
     mutated_at      TEXT NOT NULL,
     mutation_type   TEXT NOT NULL,       -- "body_rewrite", "constraint_adjust", "tool_change",
                                         --  "disable", "enable", "retire", "create"
-    mutation_source TEXT NOT NULL,       -- "reflection/<analysis_name>", "human", "bootstrap"
+    mutation_source TEXT NOT NULL,       -- "reflection/<analysis_name>", "initial_generation", "human_directive"
     trigger_insight TEXT,               -- the reflection insight that caused this mutation
     trigger_evidence TEXT,              -- specific data points (e.g. "3/10 tasks failed")
     diff_summary    TEXT,               -- human-readable summary of what changed
@@ -1445,6 +822,11 @@ CREATE TABLE kernel_task_links (
     task_value_score    REAL,           -- was this a valuable task?
     PRIMARY KEY (kernel_execution_id, task_id)
 );
+
+-- persona_change_events schema: see persona-model-and-bootstrap plan
+-- key references persona_state.key; category is denormalized for fast filtering
+-- PersonaManager writes; kernel_review.yaml reads and processes
+-- (see "Persona → Kernel Influence Mechanism", Path B)
 ```
 
 ### Evolution Tracing: What Gets Recorded
@@ -1477,9 +859,9 @@ Program Lifecycle:
               Records: reason, final quality score, replacement program (if any)
 ```
 
-### How Reflection Uses This Data
+### How Reflection Programs Use This Data
 
-The reflection kernel programs query `kernel_registry.db` to assess kernel health:
+Reflection kernel programs query `agent_state.db` via the `db_query` tool to assess kernel health. The SQL below shows examples of what a `kernel/reflection/*.yaml` program might run:
 
 **Strategy quality review** queries:
 ```sql
@@ -1525,7 +907,7 @@ The evolution trace closes a feedback loop between persona and kernel:
 persona.self_model says "concurrency is a weakness"
     │
     ▼
-  reflection creates kernel/discovery/concurrency_safety_audit.yaml
+  reflection program detects coverage gap → emits ReflectionInsight → ReflectionCore routes to KernelMutationPlanner → creates kernel/discovery/concurrency_safety_audit.yaml
   kernel_mutations records: creation_context = "self_model weakness"
     │
     ▼
@@ -1559,23 +941,374 @@ The kernel evolution trace should be visible in the dashboard:
 
 ---
 
+## Persona → Kernel Influence Mechanism
+
+Persona is the "seed" from which kernel programs grow. But the seed-to-program causation needs an explicit, well-defined mechanism. There are three distinct influence paths, each solving a different problem.
+
+### Path A: Runtime Binding (parameter-level, automatic)
+
+Kernel program bodies reference persona values using `persona.X.Y` notation (e.g., `persona.attention.domain_interests`, `persona.values.growth_value`). These references are **not** baked into the body text — they are resolved dynamically each time the KernelExecutor runs the program.
+
+**Mechanism**:
+
+```
+KernelExecutor.run(program, persona):
+
+  1. Scan body text for persona references:
+     Extract all `persona.X.Y` patterns from the body
+     → e.g. ["persona.attention.domain_interests",
+             "persona.values.growth_value",
+             "persona.self_model.weaknesses"]
+
+  2. Read referenced values from PersonaManager:
+     {
+       "persona.attention.domain_interests": [
+         {"topic": "concurrency", "weight": 0.8},
+         {"topic": "security", "weight": 0.6}
+       ],
+       "persona.values.growth_value": 0.6,
+       "persona.self_model.weaknesses": ["concurrency", "large refactors"]
+     }
+
+  3. Build system prompt with persona context section:
+     "## Your Persona Context
+      The following persona values are referenced in this program:
+
+      persona.attention.domain_interests:
+        - concurrency (weight: 0.8)
+        - security (weight: 0.6)
+
+      persona.values.growth_value: 0.6
+
+      persona.self_model.weaknesses:
+        - concurrency
+        - large refactors
+
+      Use these values when the program body references them."
+
+  4. Final prompt assembly:
+     system_prompt = persona context + envelope constraints + tool schemas
+     user_prompt   = program body (unchanged)
+```
+
+**Design decisions**:
+
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| Where persona values are injected | Dedicated section in system prompt | Body stays immutable; persona values provided as context for LLM interpretation |
+| How references are resolved | Text scan for `persona.X.Y` pattern | Simple, reliable, no template engine needed |
+| Unreferenced persona fields | Not injected | Prevents context bloat; only fields the body actually uses are loaded |
+| When persona is read | Every execution, real-time from PersonaManager | Always uses latest persona values |
+
+**Effect**: When `persona.values.exploration_vs_exploitation` changes from 0.5 to 0.8, every kernel program referencing that field **requires no modification** — KernelExecutor automatically injects the new value on next execution, and the LLM adjusts its reasoning accordingly.
+
+**Limitation**: Runtime binding only propagates **parameter-level** changes. If a persona change invalidates the **logical assumptions** in a body (e.g., "concurrency" removed from weaknesses but the body says "because my self_model identifies concurrency as a weakness"), the body needs rewriting. That's Path B.
+
+### Path B: Persona-Triggered Kernel Review (structural, via reflection)
+
+The correct abstraction is **not** "persona change → find matching programs → create per-program reviews." That approach has two fatal flaws:
+
+1. **Missing diff context**: the review logic needs old_value/new_value to reason about impact, not just a field name
+2. **Creation blind spot**: if a new attention area is added, no existing program references it, so no review is created — and no new program generation is triggered
+
+The correct abstraction is:
+
+```
+persona change → persist change event (with full diff) → kernel review system decides
+```
+
+Persona is the upstream driver; the kernel is the downstream, reviewable evolution layer. The review system has full agency to update existing programs, create new ones, or take no action.
+
+**Mechanism**:
+
+```
+[1] PersonaManager.write(key, new_value, source):
+    1. Load old_value from persona_state WHERE key = key
+    2. Persist the change event (in same transaction as the persona update):
+       INSERT INTO persona_change_events (key, category, old_value, new_value, created_at, source)
+       category = persona_state.category for this key
+    3. UPDATE persona_state SET value = new_value, updated_at, updated_by
+    4. Emit persona_changed event to Observer
+
+    NOTE: PersonaManager does NOT query kernel_programs, does NOT decide
+    which programs are affected. It only records what changed and why.
+
+[2] Next reflect cycle — kernel_review.yaml runs:
+    1. Query unprocessed persona change events:
+       SELECT * FROM persona_change_events WHERE reviewed_at IS NULL
+
+    2. For each change event, the review program (an LLM in a ReAct loop) reasons about impact:
+
+       a. Scan existing kernel programs for references to the changed key
+          → Are there programs whose body logic depends on this value?
+          → For each: does runtime binding (Path A) handle this, or is the
+            body's logical structure invalidated?
+
+       b. Scan for coverage gaps created by the change
+          → Is this a new trait/interest/capability with no kernel program coverage?
+          → Example: "distributed_systems" added to attention.domain_interests, but no
+            discovery program covers distributed systems
+
+       c. Scan for programs that are now redundant
+          → Did a trait removal make a program's entire purpose obsolete?
+
+    3. Based on assessment, take action:
+       → update existing program body → kernel_mutation
+       → create new program → kernel_mutation (via Path C generation prompt)
+       → retire obsolete program → kernel_mutation
+       → no action needed (runtime binding sufficient)
+
+    4. Mark change event as processed:
+       UPDATE persona_change_events SET reviewed_at = now(), review_outcome = '...'
+```
+
+**Why this is better than per-program matching**:
+
+| Old design (program-centric) | New design (event-centric) |
+|------------------------------|---------------------------|
+| PersonaManager queries kernel_programs table | PersonaManager only records the change |
+| Creates reviews only for programs referencing the changed field | Review system sees the full change and reasons about ALL programs + gaps |
+| New traits with zero coverage → zero reviews → silent gap | New traits → change event → review system explicitly checks for coverage gaps |
+| Review gets field name but no diff | Review gets full old_value/new_value context |
+| PersonaManager coupled to kernel system | PersonaManager decoupled — clean upstream/downstream boundary |
+
+**Concrete example — new trait (creation case)**:
+
+```
+persona.attention.domain_interests adds {"topic": "distributed_systems", "weight": 0.7}
+  │
+  ▼
+PersonaManager persists change event:
+  key: "attention.domain_interests"
+  category: "attention"
+  old_value: [{"topic": "concurrency", ...}, {"topic": "security", ...}]
+  new_value: [{"topic": "concurrency", ...}, {"topic": "security", ...},
+              {"topic": "distributed_systems", "weight": 0.7}]
+  │
+  ▼
+Next reflect cycle — kernel_review.yaml runs:
+  Reads change event: domain_interests gained "distributed_systems"
+  Scans all active kernel programs:
+    → No existing program references "distributed_systems"
+    → No discovery program covers distributed systems topics
+  Assessment: coverage gap — new high-weight interest with zero kernel coverage
+  Action: propose creation of kernel/discovery/distributed_systems_scan.yaml
+  → triggers Path C generation with this change event as creation context
+  Review outcome: "creation_proposed"
+```
+
+**Concrete example — existing trait removed (mutation/retirement case)**:
+
+```
+persona.self_model.weaknesses removes "concurrency"
+  │
+  ▼
+PersonaManager persists change event:
+  key: "self_model.weaknesses"
+  category: "self_model"
+  old_value: ["concurrency", "large refactors"]
+  new_value: ["large refactors"]
+  │
+  ▼
+Next reflect cycle — kernel_review.yaml runs:
+  Reads change event: weaknesses lost "concurrency"
+  Scans all active kernel programs:
+
+  For concurrency_safety_audit.yaml:
+    Body says: "Because my self_model identifies concurrency as a weakness..."
+    Logical premise is invalidated by the change.
+    Proposal: rewrite body to remove weakness framing (keep audit
+              functionality), OR retire if quality_score is low.
+    → kernel_mutation(type="body_rewrite",
+                      trigger_insight="persona.self_model.weaknesses removed 'concurrency'",
+                      trigger_evidence="concurrency moved to strengths after 8/10 success rate")
+
+  For task_decomposition.yaml:
+    Body says: "When task involves concurrency, use test-first approach"
+    Advice is still valid as best practice. Framing should update.
+    → kernel_mutation(type="body_rewrite",
+                      diff_summary="reframe concurrency test-first from weakness to best practice")
+
+  Review outcome: "mutation_proposed" (2 programs affected)
+```
+
+**Schema** — `persona_change_events` table in `agent_state.db` (see full schema in [persona-model-and-bootstrap plan](2026-03-10-persona-model-and-bootstrap.md)):
+
+```sql
+CREATE TABLE persona_change_events (
+    id             TEXT PRIMARY KEY,
+    key            TEXT NOT NULL,    -- references persona_state.key, e.g. "attention.domain_interests"
+    category       TEXT NOT NULL,    -- "identity" | "values" | "attention" | "policies" | "self_model"
+    old_value      TEXT,             -- JSON-serialized previous value
+    new_value      TEXT NOT NULL,    -- JSON-serialized new value
+    created_at     TEXT NOT NULL,
+    source         TEXT NOT NULL,    -- "bootstrap" | "reflection/<name>" | "human" | "directive"
+    reviewed_at    TEXT,             -- filled when kernel_review.yaml processes this event
+    review_outcome TEXT,             -- "no_action" | "mutation_proposed" | "creation_proposed" | "retirement_proposed"
+    review_detail  TEXT              -- what the review decided and why
+);
+```
+
+### Path C: Persona-Driven Kernel Generation (new programs)
+
+When the agent creates a **new** kernel program (not modifying an existing one), persona acts as the full generative context. This is triggered by two sources:
+
+1. **Reflection insight**: reflection discovers a gap ("I have no kernel program covering X")
+2. **Kernel review** (Path B): a persona change event reveals a coverage gap (new trait with no program)
+
+**Generation prompt construction**:
+
+```
+system prompt:
+  "You are writing a new kernel program for agent {persona.identity.name}.
+
+   ## Agent Identity
+   {persona.identity — full content}
+
+   ## Agent Values
+   {persona.values — full content}
+
+   ## Agent Self-Model
+   {persona.self_model — full content}
+
+   ## Agent Attention
+   {persona.attention — full content}
+
+   ## Kernel Program Schema
+   Required envelope fields:
+     schema_version: 1
+     type: {target_type}
+     name: <descriptive_name>
+     description: <one-line purpose>
+     interface:
+       trigger: <when to run>
+       available_tools: <subset of available tools>
+       output_type: <what the program produces>
+       constraints:
+         max_tool_calls: <integer>
+         max_tokens: <integer>
+     body: |
+       <natural language behavioral logic>
+     metadata:
+       created_by: agent
+       created_at: {today}
+       quality_score: null
+
+   ## Available Tools
+   {tool_registry.all_tools — names, descriptions, and I/O types}
+
+   ## Program Type Requirements
+   Programs of type '{target_type}' must produce output matching: {type_output_spec}
+
+   ## Existing Programs of This Type (reference examples)
+   {up to 3 existing kernel programs of the same type — full envelope + body}
+
+   ## Body Writing Guidelines
+   - Reference persona values using persona.X.Y format (these are resolved at runtime)
+   - Express judgment and reasoning, not just tool call sequences
+   - Include error handling in natural language ('if X is not found, skip and continue')
+   - Set constraints based on average token consumption of similar programs
+   - The body should be self-contained: another LLM reading it should understand
+     what to do without needing external documentation"
+
+user prompt:
+  "## Creation Context
+   {the reflection insight or persona change that triggered generation}
+
+   ## Evidence
+   {supporting data — failure cases, new interests, gap analysis}
+
+   ## Requirement
+   Write a {target_type} kernel program that addresses the above.
+   Output the complete YAML (envelope + body)."
+```
+
+**Key design points**:
+
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| Persona injection scope | Full persona (all files) | Generation needs global context to make identity-coherent programs |
+| Example programs | Up to 3 of the same type | Few-shot consistency without overwhelming context |
+| Tool selection | Full registry provided, agent chooses subset | Agent picks tools relevant to the program's purpose |
+| Output validation | KernelSchema.validate() before writing to disk | Catches malformed envelopes, invalid tool references, missing fields |
+| Post-generation | git commit + flag for human review + kernel_mutation record | Full audit trail |
+
+**Difference from runtime execution**: During runtime (Path A), only referenced persona fields are injected to minimize context. During generation, the **full persona** is injected because the agent needs holistic self-understanding to create a coherent new program — it must reason about "who am I and what do I need" rather than just "what does this specific field say."
+
+### Summary: Three Paths, One Loop
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                    Persona Changes                           │
+│                         │                                    │
+│         ┌───────────────┼───────────────┐                    │
+│         ▼               ▼               ▼                    │
+│    Path A:          Path B:         Path C:                  │
+│    Runtime          Triggered       Driven                   │
+│    Binding          Review          Generation               │
+│                                                              │
+│    persona param    any persona      reflection insight      │
+│    changes          change           or Path B gap found     │
+│         │               │                │                   │
+│         ▼               ▼                ▼                   │
+│    KernelExecutor   change event     LLM generates          │
+│    injects new      persisted →      new kernel program      │
+│    values into      kernel review    with full persona       │
+│    system prompt    decides action   context                 │
+│         │               │                │                   │
+│         ▼               ▼                ▼                   │
+│    Same body,       update/create/   KernelSchema            │
+│    different        retire/no-op     validates               │
+│    behavior         kernel_mutation                          │
+│         │               │                │                   │
+│         └───────────────┼────────────────┘                   │
+│                         ▼                                    │
+│               Kernel programs execute                        │
+│               with updated behavior                          │
+│                         │                                    │
+│                         ▼                                    │
+│               Execution outcomes feed back                   │
+│               into reflection → persona updates              │
+│                         │                                    │
+│                         └──────────→ (loop)                  │
+└──────────────────────────────────────────────────────────────┘
+```
+
+| Path | When | Modifies Body? | Latency | Automated? |
+|------|------|---------------|---------|------------|
+| A: Runtime Binding | Every execution | No | Zero — next execution sees new values | Fully automatic |
+| B: Triggered Review | Any persona change → change event → kernel review decides | Yes (if needed) | Next reflect cycle | Semi-automatic (kernel review decides update/create/retire/no-op) |
+| C: Driven Generation | Gap identified by reflection or by Path B kernel review | N/A (new program) | Next reflect cycle | Semi-automatic (reflection proposes, human reviews) |
+
+---
+
 ## Testing Strategy
 
 ### Unit Tests
-- Tool type validation: every tool input/output matches declared schema
+- Tool tests are in the [platform-tool-contracts plan](2026-03-10-platform-tool-contracts.md)
 - KernelExecutor constraint enforcement: halts at max_tool_calls, max_tokens
 - KernelExecutor output validation: rejects output that doesn't match output_type
 - PersonaManager schema validation: rejects malformed updates
 - Safety boundaries: executor respects SafetyPolicy even when kernel program body requests otherwise
+- Path A: persona reference scanner correctly extracts all `persona.X.Y` patterns from body text
+- Path A: KernelExecutor system prompt includes persona context section with correct resolved values
+- Path A: unreferenced persona fields are NOT included in system prompt
+- Path B: PersonaManager.write() persists `persona_change_events` with correct `key`, `category`, `old_value`, `new_value`
+- Path B: change events with no matching review are surfaced as unprocessed
+- Path C: generated kernel programs pass KernelSchema.validate()
+- Path C: generation prompt includes full persona, tool registry, and example programs
 
 ### Integration Tests
 - Full discovery cycle with kernel programs produces reasonable candidates
 - Every kernel execution creates a record in `kernel_executions`
 - Persona changes from reflection propagate correctly to subsequent kernel program executions
+- Path A end-to-end: persona value change → same kernel program produces observably different behavior on next execution
+- Path B end-to-end: persona change → change event persisted → kernel review processes event → mutation/creation/no-op recorded
+- Path C end-to-end: reflection identifies gap → generation prompt constructed → valid kernel program produced → written to disk with mutation record
 - External signal fetch + attention filter pipeline end-to-end
 - Kernel program generation produces valid, executable programs AND creates `kernel_mutations` records
 - `kernel_task_links` correctly associates kernel outputs with downstream task outcomes
-- Reflection queries against `kernel_registry.db` produce actionable insights
+- Reflection queries against `agent_state.db` produce actionable insights
 
 ### Safety Tests
 - Kernel program cannot invoke tools not listed in its available_tools
@@ -1583,6 +1316,8 @@ The kernel evolution trace should be visible in the dashboard:
 - Persona identity changes without directive approval are rejected
 - All kernel program modifications produce git diffs AND `kernel_mutations` records
 - Retired kernel programs cannot be re-executed
+- Path C: generated kernel programs cannot include tools not in tool_registry
+- Path C: generated kernel programs cannot bypass constitution constraints
 
 ---
 
@@ -1592,10 +1327,10 @@ The evolution roadmap in `docs/design/evolution.md` defines 6 phases. This plan 
 
 | Evolution Phase | Covered By | Notes |
 |----------------|-----------|-------|
-| Phase 1: Knowledge Memory | Plan Phase 1 (persona) + Phase 4 (memory kernel programs) | Embedding recall is a platform tool; memory rules become kernel programs |
+| Phase 1: Knowledge Memory | Plan Phase 4 (MemoryService + planning kernel programs) | Memory is a platform service; planning is a kernel program |
 | Phase 2: Strategic Layer | Plan Phase 1 (persona policies + cycle modes) | Projects/goals are future work built on top of persona |
 | Phase 3: Communication Layer | Not covered | Remains as future work; depends on persona + reflection |
-| Phase 4: Reflection & Meta-Cognition | Plan Phase 3 | Directly implemented as reflection kernel programs |
+| Phase 4: Reflection & Meta-Cognition | Plan Phase 3 | Implemented as ReflectionCore (fixed scheduler) + kernel/reflection/*.yaml (evolvable programs) + KernelMutationPlanner |
 | Phase 5: Codebase Model | Plan Phase 4 (synthesis + study mode) | ModuleUnderstanding becomes part of persona.self_model |
 | Phase 6: Dialogue Engine | Not covered | Remains as future work |
 
